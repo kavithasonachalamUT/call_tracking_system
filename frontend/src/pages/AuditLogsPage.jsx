@@ -1,19 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { auditLogService } from '../services/auditLogService';
-import { formatDateTime, getStatusVariant } from '../utils/formatters';
+import { userService } from '../services/userService';
+import {
+  formatAuditAction,
+  getAuditActionVariant,
+  formatAuditEntityType,
+  getAuditEntityVariant,
+  formatAuditDate,
+  formatAuditRelativeTime,
+} from '../utils/auditLogUtils';
+import { getRoleBadgeVariant, isAdmin, isManager, isAdminOrManager } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import AuditLogDetailsModal from '../components/auditLogs/AuditLogDetailsModal';
+import CallAuditTrailModal from '../components/auditLogs/CallAuditTrailModal';
 import { Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell } from '../components/ui/Table';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import EmptyState from '../components/common/EmptyState';
 import ErrorMessage from '../components/common/ErrorMessage';
 
 const PAGE_SIZE = 20;
+const DEBOUNCE_DELAY_MS = 250;
 
 const ACTION_OPTIONS = [
   { value: 'all', label: 'All Actions' },
@@ -44,35 +55,55 @@ const ENTITY_TYPE_OPTIONS = [
 
 export const AuditLogsPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const canViewMultipleUsers = isAdminOrManager(user);
 
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [auditLogs, setAuditLogs] = useState([]);
+  const [usersList, setUsersList] = useState([]);
+  const [currentPage, setCurrentPage] = useState(0);
+
+  // Modals
+  const [detailsAuditLog, setDetailsAuditLog] = useState(null);
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [isCallTrailOpen, setIsCallTrailOpen] = useState(false);
+  const [selectedCallId, setSelectedCallId] = useState(null);
+
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // Filter Form State
-  const [actionInput, setActionInput] = useState(searchParams.get('action') || 'all');
-  const [entityTypeInput, setEntityTypeInput] = useState(searchParams.get('entity_type') || 'all');
-  const [entityIdInput, setEntityIdInput] = useState(searchParams.get('entity_id') || '');
-  const [userIdInput, setUserIdInput] = useState(searchParams.get('user_id') || '');
-  const [searchInput, setSearchInput] = useState(searchParams.get('search') || '');
+  // Filter params from URL
+  const actionParam = searchParams.get('action') || 'all';
+  const entityTypeParam = searchParams.get('entity_type') || 'all';
+  const entityIdParam = searchParams.get('entity_id') || '';
+  const userIdParam = searchParams.get('user_id') || 'all';
+  const urlSearch = searchParams.get('search') || '';
 
-  const [currentPage, setCurrentPage] = useState(0);
+  const [searchInput, setSearchInput] = useState(urlSearch);
+  const [activeSearch, setActiveSearch] = useState(urlSearch);
 
-  // Modal State
-  const [detailsAuditLog, setDetailsAuditLog] = useState(null);
-  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const debounceTimerRef = useRef(null);
+  const latestRequestIdRef = useRef(0);
 
-  // Fetch Audit Logs from Backend
+  // Preload Users for Admin & Manager
+  useEffect(() => {
+    if (canViewMultipleUsers) {
+      userService.getUsers({ limit: 100 }).then(setUsersList).catch(() => {});
+    }
+  }, [canViewMultipleUsers]);
+
+  // Fetch Audit Logs
   useEffect(() => {
     let isMounted = true;
+    const requestId = ++latestRequestIdRef.current;
 
     const fetchLogs = async () => {
       try {
-        setIsLoading(true);
+        if (refreshTrigger === 0) setIsLoading(true);
+        else setIsRefreshing(true);
         setError('');
 
         const params = {
@@ -80,33 +111,29 @@ export const AuditLogsPage = () => {
           limit: PAGE_SIZE + 1,
         };
 
-        const actionParam = searchParams.get('action');
-        if (actionParam && actionParam !== 'all') params.action = actionParam;
-
-        const entityTypeParam = searchParams.get('entity_type');
-        if (entityTypeParam && entityTypeParam !== 'all') params.entity_type = entityTypeParam;
-
-        const entityIdParam = searchParams.get('entity_id');
+        if (actionParam !== 'all') params.action = actionParam;
+        if (entityTypeParam !== 'all') params.entity_type = entityTypeParam;
         if (entityIdParam) params.entity_id = parseInt(entityIdParam, 10);
-
-        const userIdParam = searchParams.get('user_id');
-        if (isAdmin && userIdParam) params.user_id = parseInt(userIdParam, 10);
-
-        const searchParam = searchParams.get('search');
-        if (searchParam) params.search = searchParam;
+        if (canViewMultipleUsers && userIdParam !== 'all') {
+          params.user_id = parseInt(userIdParam, 10);
+        }
+        if (activeSearch) params.search = activeSearch;
 
         const data = await auditLogService.getAuditLogs(params);
 
-        if (isMounted) {
+        if (isMounted && requestId === latestRequestIdRef.current) {
           setAuditLogs(data);
+          setIsSearching(false);
         }
       } catch (err) {
-        if (isMounted) {
+        if (isMounted && requestId === latestRequestIdRef.current) {
           setError(err.message || 'Unable to load audit logs. Please try again.');
+          setIsSearching(false);
         }
       } finally {
-        if (isMounted) {
+        if (isMounted && requestId === latestRequestIdRef.current) {
           setIsLoading(false);
+          setIsRefreshing(false);
         }
       }
     };
@@ -116,67 +143,112 @@ export const AuditLogsPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [currentPage, searchParams, refreshTrigger, isAdmin]);
+  }, [currentPage, actionParam, entityTypeParam, entityIdParam, userIdParam, activeSearch, refreshTrigger, canViewMultipleUsers]);
 
-  const handleApplyFilters = (e) => {
-    e.preventDefault();
-    const next = new URLSearchParams();
+  // Search input debouncing
+  const handleSearchChange = (e) => {
+    const val = e.target.value;
+    setSearchInput(val);
+    const trimmed = val.trim();
 
-    if (actionInput && actionInput !== 'all') next.set('action', actionInput);
-    if (entityTypeInput && entityTypeInput !== 'all') next.set('entity_type', entityTypeInput);
-    if (entityIdInput.trim()) next.set('entity_id', entityIdInput.trim());
-    if (isAdmin && userIdInput.trim()) next.set('user_id', userIdInput.trim());
-    if (searchInput.trim()) next.set('search', searchInput.trim());
+    if (!trimmed) {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      setIsSearching(false);
+      setActiveSearch('');
+      setCurrentPage(0);
+      const next = new URLSearchParams(searchParams);
+      next.delete('search');
+      setSearchParams(next);
+      return;
+    }
 
+    setIsSearching(true);
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    debounceTimerRef.current = setTimeout(() => {
+      setActiveSearch(trimmed);
+      setCurrentPage(0);
+      const next = new URLSearchParams(searchParams);
+      next.set('search', trimmed);
+      setSearchParams(next);
+    }, DEBOUNCE_DELAY_MS);
+  };
+
+  const handleFilterChange = (key, value) => {
+    const next = new URLSearchParams(searchParams);
+    if (value && value !== 'all') {
+      next.set(key, value);
+    } else {
+      next.delete(key);
+    }
     setCurrentPage(0);
     setSearchParams(next);
   };
 
   const handleClearFilters = () => {
-    setActionInput('all');
-    setEntityTypeInput('all');
-    setEntityIdInput('');
-    setUserIdInput('');
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setSearchInput('');
+    setActiveSearch('');
+    setIsSearching(false);
     setCurrentPage(0);
     setSearchParams({});
   };
 
   const isFilterActive =
-    (searchParams.get('action') && searchParams.get('action') !== 'all') ||
-    (searchParams.get('entity_type') && searchParams.get('entity_type') !== 'all') ||
-    searchParams.get('entity_id') ||
-    searchParams.get('user_id') ||
-    searchParams.get('search');
+    actionParam !== 'all' ||
+    entityTypeParam !== 'all' ||
+    entityIdParam !== '' ||
+    userIdParam !== 'all' ||
+    activeSearch !== '';
 
   const displayedLogs = auditLogs.slice(0, PAGE_SIZE);
   const hasNextPage = auditLogs.length > PAGE_SIZE;
 
+  // Role subtitle determination
+  const pageSubtitle = isAdmin(user)
+    ? 'Organization Activity Logs'
+    : isManager(user)
+    ? 'Team Activity Logs'
+    : 'My Activity Logs';
+
   return (
     <PageContainer
-      title={isAdmin ? 'Audit Logs' : 'My Activity'}
-      subtitle={
-        isAdmin
-          ? 'Organization-wide activity and system audit history'
-          : 'Your account activity and audit history'
-      }
+      title="Audit Logs"
+      subtitle={pageSubtitle}
       actions={
         <div className="flex items-center gap-2.5">
-          <Badge variant={isAdmin ? 'purple' : 'indigo'} size="md">
-            {isAdmin ? 'Admin View' : 'Agent Activity'}
+          <Badge variant={getRoleBadgeVariant(user?.role)} size="md">
+            {isAdmin(user) ? 'ORGANIZATION VIEW' : isManager(user) ? 'TEAM VIEW' : 'AGENT ACTIVITY'}
           </Badge>
 
           <Button
             variant="outline"
             size="sm"
+            onClick={() => {
+              setSelectedCallId(null);
+              setIsCallTrailOpen(true);
+            }}
+            title="Inspect chronological lifecycle for a specific call"
+            className="shadow-xs"
+          >
+            <svg className="w-4 h-4 mr-1 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>Call Audit Trail</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setRefreshTrigger((p) => p + 1)}
-            disabled={isLoading}
+            disabled={isLoading || isRefreshing}
+            isLoading={isRefreshing}
             className="shadow-xs"
           >
             <svg className="w-4 h-4 mr-1 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            <span>Refresh</span>
+            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
           </Button>
         </div>
       }
@@ -191,20 +263,65 @@ export const AuditLogsPage = () => {
         />
       )}
 
-      {/* 1. Filter Controls Bar */}
-      <div className="mb-6 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-        <form onSubmit={handleApplyFilters} className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* 1. Search & Filter Controls Bar */}
+      <div className="mb-6 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+        {/* Top Search Bar */}
+        <div className="relative flex items-center">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+            <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+
+          <input
+            type="text"
+            value={searchInput}
+            onChange={handleSearchChange}
+            placeholder="Search audit descriptions, action types, or values..."
+            className="w-full pl-10 pr-24 py-2.5 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+          />
+
+          <div className="absolute inset-y-0 right-0 pr-3 flex items-center gap-2">
+            {isSearching && (
+              <div className="flex items-center gap-1 text-xs text-indigo-600 font-medium">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span className="hidden sm:inline text-[11px]">Searching...</span>
+              </div>
+            )}
+
+            {searchInput && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchInput('');
+                  setActiveSearch('');
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('search');
+                  setSearchParams(next);
+                }}
+                className="w-6 h-6 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 flex items-center justify-center cursor-pointer transition-colors"
+                title="Clear search"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Dropdown Filters Grid */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="flex flex-wrap items-center gap-3">
             {/* Action Select */}
-            <div>
-              <label htmlFor="audit-action" className="block text-[11px] font-semibold text-slate-500 mb-1">
-                Action
-              </label>
+            <div className="flex items-center gap-1.5 text-xs text-slate-700">
+              <span className="text-slate-400 font-medium">Action:</span>
               <select
-                id="audit-action"
-                value={actionInput}
-                onChange={(e) => setActionInput(e.target.value)}
-                className="w-full h-9 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                value={actionParam}
+                onChange={(e) => handleFilterChange('action', e.target.value)}
+                className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
               >
                 {ACTION_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -213,15 +330,12 @@ export const AuditLogsPage = () => {
             </div>
 
             {/* Entity Type Select */}
-            <div>
-              <label htmlFor="audit-entity-type" className="block text-[11px] font-semibold text-slate-500 mb-1">
-                Entity Type
-              </label>
+            <div className="flex items-center gap-1.5 text-xs text-slate-700">
+              <span className="text-slate-400 font-medium">Entity:</span>
               <select
-                id="audit-entity-type"
-                value={entityTypeInput}
-                onChange={(e) => setEntityTypeInput(e.target.value)}
-                className="w-full h-9 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                value={entityTypeParam}
+                onChange={(e) => handleFilterChange('entity_type', e.target.value)}
+                className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
               >
                 {ENTITY_TYPE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -229,82 +343,40 @@ export const AuditLogsPage = () => {
               </select>
             </div>
 
-            {/* Entity ID */}
-            <div>
-              <label htmlFor="audit-entity-id" className="block text-[11px] font-semibold text-slate-500 mb-1">
-                Entity ID
-              </label>
-              <input
-                id="audit-entity-id"
-                type="number"
-                min="1"
-                value={entityIdInput}
-                onChange={(e) => setEntityIdInput(e.target.value)}
-                placeholder="e.g. 15"
-                className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-              />
-            </div>
-
-            {/* User ID (Admin Only) */}
-            {isAdmin ? (
-              <div>
-                <label htmlFor="audit-user-id" className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  User ID
-                </label>
-                <input
-                  id="audit-user-id"
-                  type="number"
-                  min="1"
-                  value={userIdInput}
-                  onChange={(e) => setUserIdInput(e.target.value)}
-                  placeholder="e.g. 2"
-                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
-            ) : (
-              <div>
-                <label htmlFor="audit-search" className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  Search
-                </label>
-                <input
-                  id="audit-search"
-                  type="text"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search description..."
-                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
+            {/* User Select (Admin & Manager Only) */}
+            {canViewMultipleUsers && (
+              <div className="flex items-center gap-1.5 text-xs text-slate-700">
+                <span className="text-slate-400 font-medium">User:</span>
+                <select
+                  value={userIdParam}
+                  onChange={(e) => handleFilterChange('user_id', e.target.value)}
+                  className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="all">All Users</option>
+                  {usersList.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.role})
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
           </div>
 
-          {/* Admin Search & Buttons Row */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-slate-100">
-            {isAdmin && (
-              <div className="flex-1 max-w-sm">
-                <input
-                  type="text"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search description or action..."
-                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 ml-auto">
-              {isFilterActive && (
-                <Button variant="outline" size="sm" onClick={handleClearFilters} className="h-9 text-xs">
-                  Clear Filters
-                </Button>
-              )}
-
-              <Button variant="primary" size="sm" type="submit" className="h-9 text-xs">
-                Apply Filters
-              </Button>
-            </div>
-          </div>
-        </form>
+          {/* Clear Filters */}
+          {isFilterActive && (
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer ml-auto"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              <span>Reset Filters</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 2. Audit Logs Table Card */}
@@ -312,14 +384,14 @@ export const AuditLogsPage = () => {
         <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h2 className="text-base font-bold text-slate-900 tracking-tight">Audit Trail</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Immutable historical record of events and state changes</p>
+            <p className="text-xs text-slate-500 mt-0.5">Immutable historical record of security and operational events</p>
           </div>
           <Badge variant={isFilterActive ? 'indigo' : 'gray'} size="sm">
             Page {currentPage + 1} {isFilterActive && '(Filtered)'}
           </Badge>
         </div>
 
-        {isLoading ? (
+        {isLoading && !isSearching ? (
           <div className="py-20 flex flex-col items-center justify-center">
             <LoadingSpinner size="lg" />
             <p className="mt-3 text-xs font-medium text-slate-500">Loading audit history...</p>
@@ -378,23 +450,41 @@ export const AuditLogsPage = () => {
 
                       {/* Action */}
                       <TableCell>
-                        <Badge variant={getStatusVariant(log.action)} size="sm">
-                          {log.action}
+                        <Badge variant={getAuditActionVariant(log.action)} size="sm">
+                          {formatAuditAction(log.action)}
                         </Badge>
                       </TableCell>
 
                       {/* Entity Type */}
                       <TableCell>
-                        <Badge variant="gray" size="sm" className="capitalize">
-                          {log.entity_type.replace('_', ' ')}
+                        <Badge variant={getAuditEntityVariant(log.entity_type)} size="sm" className="capitalize">
+                          {formatAuditEntityType(log.entity_type)}
                         </Badge>
                       </TableCell>
 
                       {/* Entity ID */}
                       <TableCell>
-                        <span className="font-mono text-xs text-slate-700">
-                          {log.entity_id !== null && log.entity_id !== undefined ? `#${log.entity_id}` : '—'}
-                        </span>
+                        {log.entity_id !== null && log.entity_id !== undefined ? (
+                          log.entity_type === 'call' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedCallId(log.entity_id);
+                                setIsCallTrailOpen(true);
+                              }}
+                              className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer"
+                              title="View Call Trail"
+                            >
+                              Call #{log.entity_id}
+                            </button>
+                          ) : (
+                            <span className="font-mono text-xs text-slate-700">
+                              #{log.entity_id}
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </TableCell>
 
                       {/* Description */}
@@ -406,9 +496,14 @@ export const AuditLogsPage = () => {
 
                       {/* Timestamp */}
                       <TableCell>
-                        <span className="text-xs text-slate-500 whitespace-nowrap">
-                          {formatDateTime(log.created_at)}
-                        </span>
+                        <div>
+                          <span className="text-xs font-semibold text-slate-800 block">
+                            {formatAuditRelativeTime(log.created_at)}
+                          </span>
+                          <span className="text-[11px] text-slate-400 whitespace-nowrap block">
+                            {formatAuditDate(log.created_at)}
+                          </span>
+                        </div>
                       </TableCell>
 
                       {/* View Details Action */}
@@ -464,11 +559,21 @@ export const AuditLogsPage = () => {
         )}
       </div>
 
-      {/* Details Modal */}
+      {/* 1. Details Modal */}
       <AuditLogDetailsModal
         isOpen={isDetailsModalOpen}
         onClose={() => setIsDetailsModalOpen(false)}
         auditLog={detailsAuditLog}
+      />
+
+      {/* 2. Call Audit Trail Timeline Modal */}
+      <CallAuditTrailModal
+        isOpen={isCallTrailOpen}
+        onClose={() => {
+          setIsCallTrailOpen(false);
+          setSelectedCallId(null);
+        }}
+        initialCallId={selectedCallId}
       />
     </PageContainer>
   );

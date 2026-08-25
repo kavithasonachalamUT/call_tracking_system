@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.notification import NotificationCreate, NotificationTypeEnum, ReferenceTypeEnum
 from app.services.audit_log import log_activity
 from app.services.notification import create_notification
+from app.services.storage import store_call_recording
 from app.integrations.communication.base import (
     BaseCommunicationProvider,
     NormalizedCallResult,
@@ -141,13 +142,34 @@ def initiate_outgoing_call(
     return call
 
 
+def generate_twiml_for_call(db: Session, call_id: int) -> str:
+    """
+    Generate dynamic TwiML response for Twilio Voice webhook based on call context.
+    """
+    call = db.query(Call).filter(Call.id == call_id, Call.is_active == True).first()
+    agent_phone = None
+
+    if call and call.agent_id:
+        agent = db.query(User).filter(User.id == call.agent_id).first()
+        if agent and agent.phone:
+            agent_phone = agent.phone
+
+    provider = TwilioCommunicationProvider(
+        account_sid=settings.TWILIO_ACCOUNT_SID or "dummy_sid",
+        auth_token=settings.TWILIO_AUTH_TOKEN or "dummy_token",
+        from_phone=settings.TWILIO_PHONE_NUMBER or "+15550009999",
+        webhook_base_url=settings.TWILIO_WEBHOOK_BASE_URL,
+    )
+    return provider.generate_twiml_voice(call_id=call_id, agent_phone=agent_phone)
+
+
 def process_provider_webhook(
     db: Session,
     provider_name: str,
     payload: Dict[str, Any]
 ) -> Optional[Call]:
     """
-    Process incoming status callback webhook from a communication provider and synchronize call state.
+    Process incoming status callback webhook from a communication provider with idempotency guarantees.
     """
     provider = get_communication_provider(provider_name)
     normalized: NormalizedWebhookResult = provider.handle_webhook(payload)
@@ -170,8 +192,12 @@ def process_provider_webhook(
         return None
 
     old_status = call.status
-    if normalized.status:
+    status_changed = False
+    recording_changed = False
+
+    if normalized.status and normalized.status != old_status:
         call.status = normalized.status
+        status_changed = True
 
     if normalized.started_at and not call.start_time:
         call.start_time = normalized.started_at
@@ -179,29 +205,40 @@ def process_provider_webhook(
     if normalized.ended_at:
         call.end_time = normalized.ended_at
 
-    if normalized.duration_seconds is not None:
+    if normalized.duration_seconds is not None and normalized.duration_seconds > 0:
         call.duration_seconds = normalized.duration_seconds
 
     if normalized.recording_url:
-        call.recording_url = normalized.recording_url
+        auth_header = provider._get_auth_header() if hasattr(provider, "_get_auth_header") else None
+        secure_recording_url = store_call_recording(
+            remote_recording_url=normalized.recording_url,
+            call_id=call.id,
+            recording_sid=payload.get("RecordingSid"),
+            auth_header=auth_header
+        )
+        if secure_recording_url and secure_recording_url != call.recording_url:
+            call.recording_url = secure_recording_url
+            recording_changed = True
 
     db.commit()
     db.refresh(call)
 
-    # Log activity
-    log_activity(
-        db=db,
-        user_id=call.agent_id,
-        action="status_change",
-        entity_type="call",
-        entity_id=call.id,
-        description=f"Call #{call.id} status updated to '{call.status}' via {provider_name} webhook",
-        old_values=f"status: {old_status}",
-        new_values=f"status: {call.status}, duration: {call.duration_seconds}",
-    )
+    # Idempotent activity logging: only log when status or recording actually changes
+    if status_changed or recording_changed:
+        log_activity(
+            db=db,
+            user_id=call.agent_id,
+            action="status_change" if status_changed else "update",
+            entity_type="call",
+            entity_id=call.id,
+            description=f"Call #{call.id} updated to '{call.status}' via {provider_name} webhook"
+            + (f" (Recording attached)" if recording_changed else ""),
+            old_values=f"status: {old_status}",
+            new_values=f"status: {call.status}, duration: {call.duration_seconds}, recording: {bool(call.recording_url)}",
+        )
 
-    # Create notification for assigned agent on call finalization
-    if call.status in ["completed", "failed", "missed", "cancelled"]:
+    # Idempotent Agent notification: only fire when status changes to a terminal state
+    if status_changed and call.status in ["completed", "failed", "missed", "cancelled"]:
         try:
             create_notification(
                 db=db,

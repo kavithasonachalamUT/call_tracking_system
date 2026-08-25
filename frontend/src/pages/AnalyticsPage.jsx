@@ -1,7 +1,16 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { analyticsService } from '../services/analyticsService';
-import { formatDuration, formatDateTime, getStatusVariant } from '../utils/formatters';
+import {
+  formatDuration,
+  formatPercentage,
+  formatNumber,
+  calculateConversionMetrics,
+  STATUS_LABELS,
+  OUTCOME_LABELS,
+} from '../utils/analyticsUtils';
+import { formatDateTime, getStatusVariant } from '../utils/formatters';
+import { getRoleBadgeVariant, isAdmin, isManager, isAgent } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -13,11 +22,12 @@ import ErrorMessage from '../components/common/ErrorMessage';
 
 const OUTCOME_CONFIG = {
   interested: { label: 'Interested', color: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50' },
+  converted: { label: 'Converted', color: 'bg-purple-500', text: 'text-purple-700', bg: 'bg-purple-50' },
   follow_up_required: { label: 'Follow-up Required', color: 'bg-amber-500', text: 'text-amber-700', bg: 'bg-amber-50' },
   callback_requested: { label: 'Callback Requested', color: 'bg-blue-500', text: 'text-blue-700', bg: 'bg-blue-50' },
-  converted: { label: 'Converted', color: 'bg-purple-500', text: 'text-purple-700', bg: 'bg-purple-50' },
   not_interested: { label: 'Not Interested', color: 'bg-rose-500', text: 'text-rose-700', bg: 'bg-rose-50' },
   no_response: { label: 'No Response', color: 'bg-slate-400', text: 'text-slate-700', bg: 'bg-slate-100' },
+  pending: { label: 'Pending', color: 'bg-slate-300', text: 'text-slate-600', bg: 'bg-slate-50' },
 };
 
 const TYPE_ICONS = {
@@ -31,7 +41,6 @@ const TYPE_ICONS = {
 
 export const AnalyticsPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
 
   const [analytics, setAnalytics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -45,7 +54,7 @@ export const AnalyticsPage = () => {
 
     const fetchAnalytics = async () => {
       try {
-        if (!analytics) setIsLoading(true);
+        if (refreshTrigger === 0) setIsLoading(true);
         else setIsRefreshing(true);
         setError('');
 
@@ -56,7 +65,7 @@ export const AnalyticsPage = () => {
         }
       } catch (err) {
         if (isMounted) {
-          setError(err.message || 'Unable to load analytics data. Please try again.');
+          setError(err.message || 'Unable to load analytics insights. Please try again.');
         }
       } finally {
         if (isMounted) {
@@ -103,27 +112,45 @@ export const AnalyticsPage = () => {
 
   const agentPerformance = analytics?.agent_performance || [];
 
-  // Safe percentage calculations
+  // Computed metrics
   const totalCalls = callSummary.total_calls || 0;
   const incomingCalls = callSummary.incoming_calls || 0;
   const outgoingCalls = callSummary.outgoing_calls || 0;
 
-  const incomingPct = totalCalls > 0 ? Math.round((incomingCalls / totalCalls) * 100) : 0;
-  const outgoingPct = totalCalls > 0 ? Math.round((outgoingCalls / totalCalls) * 100) : 0;
+  const incomingPct = totalCalls > 0 ? formatPercentage(incomingCalls, totalCalls, 0) : '0%';
+  const outgoingPct = totalCalls > 0 ? formatPercentage(outgoingCalls, totalCalls, 0) : '0%';
 
   const completedCalls = callSummary.status_breakdown?.completed || 0;
-  const completionRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0;
+  const completionRate = totalCalls > 0 ? formatPercentage(completedCalls, totalCalls, 0) : '0%';
+
+  const conversionMetrics = calculateConversionMetrics(
+    outcomeSummary.outcome_breakdown,
+    outcomeSummary.total_outcomes
+  );
 
   const hasData = totalCalls > 0 || outcomeSummary.total_outcomes > 0 || followUpSummary.total_follow_ups > 0;
 
+  // Role-aware Page Title & Subtitle
+  const pageTitle = isAdmin(user)
+    ? 'Organization Analytics'
+    : isManager(user)
+    ? 'Team Analytics'
+    : 'My Analytics';
+
+  const pageSubtitle = isAdmin(user)
+    ? 'Organization-wide call and performance insights'
+    : isManager(user)
+    ? 'Performance and call insights for your team'
+    : 'Your personal call and performance insights';
+
   return (
     <PageContainer
-      title="Analytics"
-      subtitle="Call activity, duration distribution, outcome conversions, and agent performance insights"
+      title={pageTitle}
+      subtitle={pageSubtitle}
       actions={
         <div className="flex items-center gap-2.5">
-          <Badge variant={isAdmin ? 'purple' : 'indigo'} size="md">
-            {isAdmin ? 'Organization Analytics' : 'My Analytics'}
+          <Badge variant={getRoleBadgeVariant(user?.role)} size="md">
+            {isAdmin(user) ? 'ORGANIZATION SUITE' : isManager(user) ? 'TEAM SUITE' : 'PERSONAL SUITE'}
           </Badge>
 
           <Button
@@ -185,19 +212,19 @@ export const AnalyticsPage = () => {
                 </div>
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-bold text-slate-900">{totalCalls}</span>
-                <span className="text-xs text-slate-400 font-medium">logged</span>
+                <span className="text-2xl font-bold text-slate-900">{formatNumber(totalCalls)}</span>
+                <span className="text-xs text-slate-400 font-medium">calls</span>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <span>Completed: <strong>{completedCalls}</strong></span>
-                <Badge variant="green" size="sm">{completionRate}% Rate</Badge>
+                <span>Completed: <strong>{formatNumber(completedCalls)}</strong></span>
+                <Badge variant="green" size="sm">{completionRate} Rate</Badge>
               </div>
             </div>
 
             {/* Total Duration */}
             <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Total Duration</span>
+                <span className="text-xs font-semibold text-slate-500">Total Talk Time</span>
                 <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xs">
                   ⏱
                 </div>
@@ -208,7 +235,7 @@ export const AnalyticsPage = () => {
                 </span>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <span>Avg Call: <strong className="font-mono">{formatDuration(callSummary.avg_duration_seconds)}</strong></span>
+                <span>Avg: <strong className="font-mono">{formatDuration(callSummary.avg_duration_seconds)}</strong></span>
                 <Badge variant="blue" size="sm">Talk Time</Badge>
               </div>
             </div>
@@ -222,13 +249,13 @@ export const AnalyticsPage = () => {
                 </div>
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-bold text-slate-900">{outcomeSummary.total_outcomes}</span>
+                <span className="text-2xl font-bold text-slate-900">{formatNumber(outcomeSummary.total_outcomes)}</span>
                 <span className="text-xs text-slate-400 font-medium">interactions</span>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <span>Interested: <strong>{outcomeSummary.outcome_breakdown?.interested || 0}</strong></span>
+                <span>Engaged: <strong>{conversionMetrics.count}</strong></span>
                 <Badge variant="green" size="sm">
-                  {outcomeSummary.outcome_breakdown?.converted || 0} Converted
+                  {conversionMetrics.rate} Rate
                 </Badge>
               </div>
             </div>
@@ -242,12 +269,12 @@ export const AnalyticsPage = () => {
                 </div>
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-bold text-slate-900">{followUpSummary.total_follow_ups}</span>
-                <span className="text-xs text-slate-400 font-medium">scheduled</span>
+                <span className="text-2xl font-bold text-slate-900">{formatNumber(followUpSummary.total_follow_ups)}</span>
+                <span className="text-xs text-slate-400 font-medium">tasks</span>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                 <span>Pending: <strong>{followUpSummary.status_breakdown?.pending || 0}</strong></span>
-                <Badge variant="amber" size="sm">Active Tasks</Badge>
+                <Badge variant="amber" size="sm">Active</Badge>
               </div>
             </div>
           </div>
@@ -259,7 +286,7 @@ export const AnalyticsPage = () => {
               <div>
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <h3 className="text-sm font-bold text-slate-900">Call Direction Distribution</h3>
-                  <span className="text-xs text-slate-400">{totalCalls} Total Calls</span>
+                  <span className="text-xs text-slate-400">{formatNumber(totalCalls)} Total Calls</span>
                 </div>
 
                 <div className="mt-5 space-y-4">
@@ -269,12 +296,12 @@ export const AnalyticsPage = () => {
                       <span className="flex items-center gap-1.5">
                         <span className="text-indigo-600 font-bold">↙</span> Incoming Calls
                       </span>
-                      <span><strong>{incomingCalls}</strong> ({incomingPct}%)</span>
+                      <span><strong>{incomingCalls}</strong> ({incomingPct})</span>
                     </div>
                     <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-indigo-600 rounded-full transition-all duration-500"
-                        style={{ width: `${incomingPct}%` }}
+                        style={{ width: incomingPct }}
                       />
                     </div>
                     <span className="text-[11px] text-slate-400 mt-1 block">
@@ -288,12 +315,12 @@ export const AnalyticsPage = () => {
                       <span className="flex items-center gap-1.5">
                         <span className="text-blue-600 font-bold">↗</span> Outgoing Calls
                       </span>
-                      <span><strong>{outgoingCalls}</strong> ({outgoingPct}%)</span>
+                      <span><strong>{outgoingCalls}</strong> ({outgoingPct})</span>
                     </div>
                     <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                        style={{ width: `${outgoingPct}%` }}
+                        style={{ width: outgoingPct }}
                       />
                     </div>
                     <span className="text-[11px] text-slate-400 mt-1 block">
@@ -308,19 +335,19 @@ export const AnalyticsPage = () => {
             <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <h3 className="text-sm font-bold text-slate-900">Call Status Breakdown</h3>
-                <span className="text-xs text-slate-400">By Telephony Events</span>
+                <span className="text-xs text-slate-400">Telephony Lifecycle</span>
               </div>
 
               <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 {Object.entries(callSummary.status_breakdown || {}).map(([st, count]) => {
-                  const pct = totalCalls > 0 ? Math.round((count / totalCalls) * 100) : 0;
+                  const pct = totalCalls > 0 ? formatPercentage(count, totalCalls, 0) : '0%';
                   return (
                     <div key={st} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-left">
                       <Badge variant={getStatusVariant(st)} size="sm">
-                        {st.toUpperCase()}
+                        {STATUS_LABELS[st] || st.toUpperCase()}
                       </Badge>
-                      <div className="mt-2 font-bold text-base text-slate-900">{count}</div>
-                      <span className="text-[11px] text-slate-400">{pct}% of total</span>
+                      <div className="mt-2 font-bold text-base text-slate-900">{formatNumber(count)}</div>
+                      <span className="text-[11px] text-slate-400">{pct} of total</span>
                     </div>
                   );
                 })}
@@ -334,7 +361,7 @@ export const AnalyticsPage = () => {
             <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <h3 className="text-sm font-bold text-slate-900">Recorded Outcomes & Conversions</h3>
-                <Badge variant="green" size="sm">{outcomeSummary.total_outcomes} Outcomes</Badge>
+                <Badge variant="green" size="sm">{formatNumber(outcomeSummary.total_outcomes)} Recorded</Badge>
               </div>
 
               <div className="mt-4 space-y-2.5">
@@ -342,9 +369,14 @@ export const AnalyticsPage = () => {
                   <p className="text-xs text-slate-400 py-6 text-center">No outcome results recorded yet.</p>
                 ) : (
                   Object.entries(outcomeSummary.outcome_breakdown || {}).map(([key, count]) => {
-                    const cfg = OUTCOME_CONFIG[key] || { label: key, text: 'text-slate-700', bg: 'bg-slate-50', color: 'bg-slate-400' };
+                    const cfg = OUTCOME_CONFIG[key] || {
+                      label: OUTCOME_LABELS[key] || key,
+                      text: 'text-slate-700',
+                      bg: 'bg-slate-50',
+                      color: 'bg-slate-400',
+                    };
                     const totalOutcomes = outcomeSummary.total_outcomes || 1;
-                    const pct = Math.round((count / totalOutcomes) * 100);
+                    const pct = formatPercentage(count, totalOutcomes, 0);
 
                     return (
                       <div key={key} className="p-2.5 rounded-xl border border-slate-100 flex items-center justify-between text-xs">
@@ -353,8 +385,8 @@ export const AnalyticsPage = () => {
                           <span className="font-semibold text-slate-800">{cfg.label}</span>
                         </div>
                         <div className="flex items-center gap-3">
-                          <span className="font-bold text-slate-900">{count}</span>
-                          <span className="text-slate-400 text-[11px] w-10 text-right">{pct}%</span>
+                          <span className="font-bold text-slate-900">{formatNumber(count)}</span>
+                          <span className="text-slate-400 text-[11px] w-10 text-right">{pct}</span>
                         </div>
                       </div>
                     );
@@ -367,7 +399,7 @@ export const AnalyticsPage = () => {
             <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <h3 className="text-sm font-bold text-slate-900">Follow-up Task Types</h3>
-                <Badge variant="amber" size="sm">{followUpSummary.total_follow_ups} Tasks</Badge>
+                <Badge variant="amber" size="sm">{formatNumber(followUpSummary.total_follow_ups)} Tasks</Badge>
               </div>
 
               <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -379,7 +411,7 @@ export const AnalyticsPage = () => {
                       <span className="text-xs font-semibold text-slate-700 block">
                         {TYPE_ICONS[typeKey] || typeKey}
                       </span>
-                      <div className="mt-2 font-bold text-base text-slate-900">{count}</div>
+                      <div className="mt-2 font-bold text-base text-slate-900">{formatNumber(count)}</div>
                       <span className="text-[11px] text-slate-400">Scheduled</span>
                     </div>
                   ))
@@ -388,18 +420,18 @@ export const AnalyticsPage = () => {
             </div>
           </div>
 
-          {/* 4. Agent Performance Section (Admin / Team Level) */}
-          {agentPerformance.length > 0 && (
+          {/* 4. Agent Performance Section (Admin / Manager / Agent) */}
+          {agentPerformance.length > 0 && !isAgent(user) && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
               <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                    {isAdmin ? 'Agent Performance Overview' : 'My Performance Statistics'}
+                    {isAdmin(user) ? 'Agent Performance Breakdown' : 'Team Member Performance'}
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">Call volumes, talk time, outcomes, and task allocation</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Call volumes, talk time, completed interactions, and task allocation</p>
                 </div>
                 <Badge variant="purple" size="sm">
-                  {agentPerformance.length} {agentPerformance.length === 1 ? 'Agent' : 'Agents'}
+                  {agentPerformance.length} {agentPerformance.length === 1 ? 'Member' : 'Members'}
                 </Badge>
               </div>
 
@@ -409,7 +441,7 @@ export const AnalyticsPage = () => {
                     <TableRow>
                       <TableHeaderCell>Agent Name</TableHeaderCell>
                       <TableHeaderCell>Total Calls</TableHeaderCell>
-                      <TableHeaderCell>Incoming / Outgoing</TableHeaderCell>
+                      <TableHeaderCell>In / Out</TableHeaderCell>
                       <TableHeaderCell>Completed</TableHeaderCell>
                       <TableHeaderCell>Total Duration</TableHeaderCell>
                       <TableHeaderCell>Avg Duration</TableHeaderCell>
@@ -431,7 +463,7 @@ export const AnalyticsPage = () => {
 
                         {/* Total Calls */}
                         <TableCell>
-                          <span className="font-bold text-slate-900">{ag.total_calls}</span>
+                          <span className="font-bold text-slate-900">{formatNumber(ag.total_calls)}</span>
                         </TableCell>
 
                         {/* In / Out */}
@@ -444,7 +476,7 @@ export const AnalyticsPage = () => {
                         {/* Completed */}
                         <TableCell>
                           <Badge variant="green" size="sm">
-                            {ag.completed_calls}
+                            {formatNumber(ag.completed_calls)}
                           </Badge>
                         </TableCell>
 
@@ -464,12 +496,12 @@ export const AnalyticsPage = () => {
 
                         {/* Outcomes */}
                         <TableCell>
-                          <span className="font-semibold text-slate-800">{ag.outcomes_recorded}</span>
+                          <span className="font-semibold text-slate-800">{formatNumber(ag.outcomes_recorded)}</span>
                         </TableCell>
 
                         {/* Follow-ups */}
                         <TableCell className="text-right">
-                          <span className="font-semibold text-amber-700">{ag.follow_ups_assigned}</span>
+                          <span className="font-semibold text-amber-700">{formatNumber(ag.follow_ups_assigned)}</span>
                         </TableCell>
                       </TableRow>
                     ))}

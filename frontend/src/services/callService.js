@@ -73,12 +73,25 @@ export const callService = {
   },
 
   /**
-   * Reassign call to an agent (Admin only)
+   * Reassign call to an agent (Admin or Manager)
    * @param {number} callId
    * @param {number} agentId
    * @returns {Promise<any>}
    */
   assignCall: async (callId, agentId) => {
+    const response = await apiClient.patch(`/calls/${callId}/assign`, {
+      agent_id: agentId,
+    });
+    return response.data;
+  },
+
+  /**
+   * Reassign call alias
+   * @param {number} callId
+   * @param {number} agentId
+   * @returns {Promise<any>}
+   */
+  reassignCall: async (callId, agentId) => {
     const response = await apiClient.patch(`/calls/${callId}/assign`, {
       agent_id: agentId,
     });

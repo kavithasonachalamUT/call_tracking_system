@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { notificationService } from '../services/notificationService';
+import {
+  formatNotificationType,
+  getNotificationTypeVariant,
+  getNotificationIcon,
+  formatRelativeTime,
+  formatReferenceLabel,
+  getReferencePath,
+} from '../utils/notificationUtils';
 import { formatDateTime } from '../utils/formatters';
+import { isAdmin, isManager } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -16,14 +25,7 @@ import EmptyState from '../components/common/EmptyState';
 import ErrorMessage from '../components/common/ErrorMessage';
 
 const PAGE_SIZE = 10;
-
-const TYPE_CONFIG = {
-  call_assigned: { label: 'Call Assigned', variant: 'blue', icon: '☎' },
-  follow_up_reminder: { label: 'Follow-up Reminder', variant: 'amber', icon: '◷' },
-  call_outcome_recorded: { label: 'Outcome Recorded', variant: 'green', icon: '✓' },
-  system_alert: { label: 'System Alert', variant: 'rose', icon: '⚠' },
-  other: { label: 'General', variant: 'gray', icon: '💬' },
-};
+const AUTO_REFRESH_INTERVAL_MS = 30000; // 30s lightweight refresh
 
 const READ_STATUS_OPTIONS = [
   { value: 'all', label: 'All Notifications' },
@@ -34,21 +36,20 @@ const READ_STATUS_OPTIONS = [
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All Types' },
   { value: 'call_assigned', label: '☎ Call Assigned' },
-  { value: 'follow_up_reminder', label: '◷ Follow-up Reminder' },
+  { value: 'follow_up_reminder', label: '⏰ Follow-up Due' },
   { value: 'call_outcome_recorded', label: '✓ Outcome Recorded' },
-  { value: 'system_alert', label: '⚠ System Alert' },
-  { value: 'other', label: '💬 General' },
+  { value: 'system_alert', label: '🔔 System Alert' },
+  { value: 'other', label: '📝 Other' },
 ];
 
 export const NotificationsPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [notifications, setNotifications] = useState([]);
   const [summary, setSummary] = useState({ unread_count: 0, total_count: 0 });
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isMarkingAll, setIsMarkingAll] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState(null);
@@ -74,7 +75,8 @@ export const NotificationsPage = () => {
 
     const fetchNotifications = async () => {
       try {
-        setIsLoading(true);
+        if (refreshTrigger === 0) setIsLoading(true);
+        else setIsRefreshing(true);
         setError('');
 
         const params = {
@@ -102,6 +104,7 @@ export const NotificationsPage = () => {
       } finally {
         if (isMounted) {
           setIsLoading(false);
+          setIsRefreshing(false);
         }
       }
     };
@@ -112,6 +115,15 @@ export const NotificationsPage = () => {
       isMounted = false;
     };
   }, [currentPage, readFilter, typeFilter, refreshTrigger]);
+
+  // Periodic Auto-refresh
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRefreshTrigger((prev) => prev + 1);
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const triggerRefresh = () => {
     setRefreshTrigger((prev) => prev + 1);
@@ -138,8 +150,12 @@ export const NotificationsPage = () => {
   const handleMarkAsRead = async (notificationId) => {
     try {
       await notificationService.markNotificationAsRead(notificationId);
-      setToast({ message: '✓ Notification marked as read', type: 'success' });
-      triggerRefresh();
+      setToast({ message: 'Notification marked as read', type: 'success' });
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notificationId ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
+      );
+      setSummary((prev) => ({ ...prev, unread_count: Math.max(0, prev.unread_count - 1) }));
+
       if (detailsNotification && detailsNotification.id === notificationId) {
         setDetailsNotification((prev) => ({ ...prev, is_read: true, read_at: new Date().toISOString() }));
       }
@@ -155,7 +171,10 @@ export const NotificationsPage = () => {
     try {
       const updatedSummary = await notificationService.markAllNotificationsAsRead();
       setSummary(updatedSummary);
-      setToast({ message: '✓ All notifications marked as read', type: 'success' });
+      setNotifications((prev) =>
+        prev.map((n) => ({ ...n, is_read: true, read_at: n.read_at || new Date().toISOString() }))
+      );
+      setToast({ message: 'All notifications marked as read', type: 'success' });
       triggerRefresh();
     } catch (err) {
       setToast({ message: err.message || 'Failed to mark all as read.', type: 'error' });
@@ -166,7 +185,7 @@ export const NotificationsPage = () => {
 
   const handleCreateNotification = async (payload) => {
     await notificationService.createNotification(payload);
-    setToast({ message: '✓ Notification sent successfully', type: 'success' });
+    setToast({ message: 'Notification sent successfully', type: 'success' });
     triggerRefresh();
   };
 
@@ -176,7 +195,7 @@ export const NotificationsPage = () => {
 
     try {
       await notificationService.deleteNotification(deleteNotificationObj.id);
-      setToast({ message: '✓ Notification removed', type: 'success' });
+      setToast({ message: 'Notification removed', type: 'success' });
       setIsDeleteModalOpen(false);
       setDeleteNotificationObj(null);
       triggerRefresh();
@@ -191,23 +210,32 @@ export const NotificationsPage = () => {
   const displayedNotifications = notifications.slice(0, PAGE_SIZE);
   const hasNextPage = notifications.length > PAGE_SIZE;
 
+  // Role subtitle determination
+  const pageSubtitle = isAdmin(user)
+    ? 'Organization notifications'
+    : isManager(user)
+    ? 'Team notifications'
+    : 'Your notifications';
+
   return (
     <PageContainer
       title="Notifications"
-      subtitle="Stay updated with important call and follow-up activity"
+      subtitle={pageSubtitle}
       actions={
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={triggerRefresh}
+            isLoading={isRefreshing}
+            disabled={isRefreshing || isLoading}
             title="Refresh notifications"
             className="shadow-xs"
           >
             <svg className="w-4 h-4 mr-1 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            <span>Refresh</span>
+            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
           </Button>
 
           <Button
@@ -224,7 +252,7 @@ export const NotificationsPage = () => {
             <span>Mark All as Read</span>
           </Button>
 
-          {isAdmin && (
+          {isAdmin(user) && (
             <Button
               variant="primary"
               size="sm"
@@ -305,7 +333,7 @@ export const NotificationsPage = () => {
             <select
               value={readFilter}
               onChange={(e) => handleFilterChange('is_read', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {READ_STATUS_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -319,7 +347,7 @@ export const NotificationsPage = () => {
             <select
               value={typeFilter}
               onChange={(e) => handleFilterChange('type', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -355,7 +383,7 @@ export const NotificationsPage = () => {
           </Badge>
         </div>
 
-        {isLoading ? (
+        {isLoading && !isRefreshing ? (
           <div className="py-20 flex flex-col items-center justify-center">
             <LoadingSpinner size="lg" />
             <p className="mt-3 text-xs font-medium text-slate-500">Loading notifications...</p>
@@ -367,7 +395,7 @@ export const NotificationsPage = () => {
               description={
                 isAnyFilterActive
                   ? 'Try adjusting your read status or notification type filter.'
-                  : "You're all caught up. New activity will appear here."
+                  : "You're all caught up. New activity and reminders will appear here."
               }
               action={
                 isAnyFilterActive ? (
@@ -382,11 +410,8 @@ export const NotificationsPage = () => {
           <>
             <div className="divide-y divide-slate-100">
               {displayedNotifications.map((notif) => {
-                const typeConfig = TYPE_CONFIG[notif.notification_type] || {
-                  label: notif.notification_type,
-                  variant: 'gray',
-                  icon: '💬',
-                };
+                const refPath = getReferencePath(notif.reference_type);
+                const refLabel = formatReferenceLabel(notif.reference_type, notif.reference_id);
 
                 return (
                   <div
@@ -408,19 +433,28 @@ export const NotificationsPage = () => {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-1">
-                          <Badge variant={typeConfig.variant} size="sm">
-                            <span className="mr-1">{typeConfig.icon}</span>
-                            <span>{typeConfig.label}</span>
+                          <Badge variant={getNotificationTypeVariant(notif.notification_type)} size="sm">
+                            <span className="mr-1">{getNotificationIcon(notif.notification_type)}</span>
+                            <span>{formatNotificationType(notif.notification_type)}</span>
                           </Badge>
 
-                          {notif.reference_type && (
-                            <span className="text-[11px] font-mono text-slate-500 font-medium">
-                              Ref: {notif.reference_type} {notif.reference_id ? `#${notif.reference_id}` : ''}
-                            </span>
+                          {refLabel && (
+                            refPath ? (
+                              <Link
+                                to={refPath}
+                                className="text-[11px] font-mono text-indigo-600 hover:text-indigo-800 font-semibold hover:underline"
+                              >
+                                {refLabel}
+                              </Link>
+                            ) : (
+                              <span className="text-[11px] font-mono text-slate-500 font-medium">
+                                {refLabel}
+                              </span>
+                            )
                           )}
 
-                          <span className="text-slate-400 text-xs ml-auto whitespace-nowrap">
-                            {formatDateTime(notif.created_at)}
+                          <span className="text-slate-400 text-xs ml-auto whitespace-nowrap" title={formatDateTime(notif.created_at)}>
+                            {formatRelativeTime(notif.created_at)}
                           </span>
                         </div>
 
@@ -523,14 +557,16 @@ export const NotificationsPage = () => {
         )}
       </div>
 
-      {/* 1. Admin Create Notification Modal */}
-      <CreateNotificationModal
-        isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-        onSubmit={handleCreateNotification}
-      />
+      {/* 1. Create Notification Modal (Admin Only) */}
+      {isAdmin(user) && (
+        <CreateNotificationModal
+          isOpen={isCreateModalOpen}
+          onClose={() => setIsCreateModalOpen(false)}
+          onSubmit={handleCreateNotification}
+        />
+      )}
 
-      {/* 2. Details Modal */}
+      {/* 2. Notification Details Modal */}
       <NotificationDetailsModal
         isOpen={isDetailsModalOpen}
         onClose={() => setIsDetailsModalOpen(false)}
@@ -562,17 +598,17 @@ export const NotificationsPage = () => {
                 isLoading={isDeleting}
                 disabled={isDeleting}
               >
-                {isDeleting ? 'Deleting...' : 'Delete'}
+                {isDeleting ? 'Deleting...' : 'Delete Notification'}
               </Button>
             </>
           }
         >
           <div className="text-left text-sm text-slate-600 space-y-2">
             <p>
-              Are you sure you want to remove notification <strong className="font-semibold text-slate-900">"{deleteNotificationObj.title}"</strong>?
+              Are you sure you want to delete this notification: <strong className="font-semibold text-slate-900">"{deleteNotificationObj.title}"</strong>?
             </p>
             <p className="text-xs text-slate-500">
-              This action will dismiss the notification from your active feed.
+              This action will dismiss this alert from your notification feed.
             </p>
           </div>
         </Modal>

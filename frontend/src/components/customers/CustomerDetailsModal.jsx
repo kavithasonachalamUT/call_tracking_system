@@ -8,6 +8,7 @@ export const CustomerDetailsModal = ({
   onClose,
   customer,
   onEdit,
+  canEdit = false,
 }) => {
   if (!customer || !isOpen) return null;
 
@@ -28,7 +29,7 @@ export const CustomerDetailsModal = ({
           >
             Close
           </Button>
-          {onEdit && (
+          {canEdit && onEdit && (
             <Button
               variant="primary"
               size="sm"

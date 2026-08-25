@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     EXOTEL_PHONE_NUMBER: Optional[str] = None
     EXOTEL_WEBHOOK_BASE_URL: Optional[str] = None
 
+    # Cloudflare R2 Storage Configuration
+    R2_ACCOUNT_ID: Optional[str] = None
+    R2_ACCESS_KEY_ID: Optional[str] = None
+    R2_SECRET_ACCESS_KEY: Optional[str] = None
+    R2_BUCKET_NAME: Optional[str] = None
+    R2_PUBLIC_DOMAIN: Optional[str] = None
+
     class Config:
         env_file = ".env"
         extra = "ignore"

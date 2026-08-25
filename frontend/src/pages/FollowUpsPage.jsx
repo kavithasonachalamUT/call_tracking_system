@@ -1,13 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
 import { followUpService } from '../services/followUpService';
 import { customerService } from '../services/customerService';
 import { userService } from '../services/userService';
 import {
+  formatFollowUpType,
+  getFollowUpTypeVariant,
+  formatFollowUpStatus,
+  getFollowUpStatusVariant,
+  formatRelativeDueTime,
+  isFollowUpOverdue,
+  isFollowUpDueToday,
   formatDateTime,
-  formatPhoneNumber,
-  getStatusVariant,
-} from '../utils/formatters';
+} from '../utils/followUpUtils';
+import { formatPhoneNumber, formatCustomerName } from '../utils/formatters';
+import { isAdmin, isManager } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -29,8 +37,8 @@ const STATUS_OPTIONS = [
   { value: 'pending', label: '◷ Pending' },
   { value: 'in_progress', label: '↻ In Progress' },
   { value: 'completed', label: '✓ Completed' },
-  { value: 'overdue', label: '⚠ Overdue' },
   { value: 'cancelled', label: '− Cancelled' },
+  { value: 'overdue', label: '⚠ Overdue' },
 ];
 
 const TYPE_OPTIONS = [
@@ -43,22 +51,17 @@ const TYPE_OPTIONS = [
   { value: 'other', label: '📝 Other' },
 ];
 
-const TYPE_ICONS = {
-  callback: '☎',
-  email: '✉',
-  demo: '💻',
-  meeting: '📅',
-  whatsapp: '💬',
-  other: '📝',
-};
-
 export const FollowUpsPage = () => {
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [followUps, setFollowUps] = useState([]);
   const [customersMap, setCustomersMap] = useState({});
   const [agentsMap, setAgentsMap] = useState({});
+  const [agentsList, setAgentsList] = useState([]);
+
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState(null);
@@ -67,6 +70,7 @@ export const FollowUpsPage = () => {
   // Filters from URL
   const statusFilter = searchParams.get('status') || 'all';
   const typeFilter = searchParams.get('type') || 'all';
+  const agentFilter = searchParams.get('assigned_to') || 'all';
   const urlSearch = searchParams.get('search') || '';
 
   const [searchInput, setSearchInput] = useState(urlSearch);
@@ -90,6 +94,9 @@ export const FollowUpsPage = () => {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [completingId, setCompletingId] = useState(null);
+  const [cancellingId, setCancellingId] = useState(null);
+
+  const canFilterAgents = isAdmin(user) || isManager(user);
 
   // Preload customers & users for reference
   useEffect(() => {
@@ -100,12 +107,17 @@ export const FollowUpsPage = () => {
     ]).then(([custList, userList]) => {
       if (isMounted) {
         const cMap = {};
-        custList.forEach((c) => { cMap[c.id] = c; });
+        custList.forEach((c) => {
+          cMap[c.id] = c;
+        });
         setCustomersMap(cMap);
 
         const aMap = {};
-        userList.forEach((u) => { aMap[u.id] = u; });
+        userList.forEach((u) => {
+          aMap[u.id] = u;
+        });
         setAgentsMap(aMap);
+        setAgentsList(userList);
       }
     });
 
@@ -121,7 +133,8 @@ export const FollowUpsPage = () => {
 
     const fetchFollowUps = async () => {
       try {
-        setIsLoading(true);
+        if (refreshTrigger === 0) setIsLoading(true);
+        else setIsRefreshing(true);
         setError('');
 
         const params = {
@@ -131,6 +144,9 @@ export const FollowUpsPage = () => {
 
         if (statusFilter !== 'all') params.status = statusFilter;
         if (typeFilter !== 'all') params.follow_up_type = typeFilter;
+        if (agentFilter !== 'all' && canFilterAgents) {
+          params.assigned_to = parseInt(agentFilter, 10);
+        }
         if (activeSearch) params.search = activeSearch;
 
         const data = await followUpService.getFollowUps(params);
@@ -147,6 +163,7 @@ export const FollowUpsPage = () => {
       } finally {
         if (isMounted && requestId === latestRequestIdRef.current) {
           setIsLoading(false);
+          setIsRefreshing(false);
         }
       }
     };
@@ -156,7 +173,7 @@ export const FollowUpsPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [currentPage, statusFilter, typeFilter, activeSearch, refreshTrigger]);
+  }, [currentPage, statusFilter, typeFilter, agentFilter, activeSearch, refreshTrigger, canFilterAgents]);
 
   // Clean up debounce timer
   useEffect(() => {
@@ -245,10 +262,10 @@ export const FollowUpsPage = () => {
   const handleFormSubmit = async (payload) => {
     if (isEditing && selectedFollowUp) {
       await followUpService.updateFollowUp(selectedFollowUp.id, payload);
-      setToast({ message: '✓ Follow-up updated successfully', type: 'success' });
+      setToast({ message: 'Follow-up updated successfully', type: 'success' });
     } else {
       await followUpService.createFollowUp(payload);
-      setToast({ message: '✓ Follow-up scheduled successfully', type: 'success' });
+      setToast({ message: 'Follow-up scheduled successfully', type: 'success' });
     }
     triggerRefresh();
   };
@@ -257,7 +274,7 @@ export const FollowUpsPage = () => {
     setCompletingId(followUpId);
     try {
       await followUpService.completeFollowUp(followUpId);
-      setToast({ message: '✓ Follow-up marked as completed', type: 'success' });
+      setToast({ message: 'Follow-up marked as completed', type: 'success' });
       triggerRefresh();
       if (detailsFollowUp && detailsFollowUp.id === followUpId) {
         setIsDetailsModalOpen(false);
@@ -269,13 +286,29 @@ export const FollowUpsPage = () => {
     }
   };
 
+  const handleCancelFollowUp = async (followUpId) => {
+    setCancellingId(followUpId);
+    try {
+      await followUpService.cancelFollowUp(followUpId);
+      setToast({ message: 'Follow-up cancelled', type: 'success' });
+      triggerRefresh();
+      if (detailsFollowUp && detailsFollowUp.id === followUpId) {
+        setIsDetailsModalOpen(false);
+      }
+    } catch (err) {
+      setToast({ message: err.message || 'Failed to cancel follow-up.', type: 'error' });
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   const handleConfirmDelete = async () => {
     if (!deletingFollowUp) return;
     setIsDeleting(true);
 
     try {
       await followUpService.deleteFollowUp(deletingFollowUp.id);
-      setToast({ message: `✓ Follow-up #${deletingFollowUp.id} removed`, type: 'success' });
+      setToast({ message: `Follow-up #${deletingFollowUp.id} removed`, type: 'success' });
       setIsDeleteModalOpen(false);
       setDeletingFollowUp(null);
       triggerRefresh();
@@ -289,27 +322,52 @@ export const FollowUpsPage = () => {
   const isAnyFilterActive =
     statusFilter !== 'all' ||
     typeFilter !== 'all' ||
+    agentFilter !== 'all' ||
     activeSearch !== '';
 
   const displayedFollowUps = followUps.slice(0, PAGE_SIZE);
   const hasNextPage = followUps.length > PAGE_SIZE;
 
+  // Role subtitle determination
+  const pageSubtitle = isAdmin(user)
+    ? 'Manage organization follow-ups'
+    : isManager(user)
+    ? 'Manage team follow-ups'
+    : 'Manage your follow-ups';
+
   return (
     <PageContainer
       title="Follow-ups"
-      subtitle="Manage scheduled callbacks and follow-up activities"
+      subtitle={pageSubtitle}
       actions={
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={handleOpenCreateModal}
-          className="shadow-xs"
-        >
-          <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          <span>New Follow-up</span>
-        </Button>
+        <div className="flex items-center gap-2.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={triggerRefresh}
+            isLoading={isRefreshing}
+            disabled={isRefreshing || isLoading}
+            title="Refresh follow-ups list"
+            className="shadow-xs"
+          >
+            <svg className="w-4 h-4 mr-1 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+          </Button>
+
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleOpenCreateModal}
+            className="shadow-xs"
+          >
+            <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            <span>New Follow-up</span>
+          </Button>
+        </div>
       }
     >
       {/* Toast Notification */}
@@ -346,7 +404,7 @@ export const FollowUpsPage = () => {
             type="text"
             value={searchInput}
             onChange={handleSearchChange}
-            placeholder="Search follow-up notes and agenda..."
+            placeholder="Search follow-up notes, callbacks, and agenda..."
             className="w-full pl-10 pr-24 py-2.5 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
           />
 
@@ -389,7 +447,7 @@ export const FollowUpsPage = () => {
             <select
               value={statusFilter}
               onChange={(e) => handleFilterChange('status', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {STATUS_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -403,13 +461,32 @@ export const FollowUpsPage = () => {
             <select
               value={typeFilter}
               onChange={(e) => handleFilterChange('type', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
           </div>
+
+          {/* Agent Filter (Admin / Manager) */}
+          {canFilterAgents && (
+            <div className="flex items-center gap-1.5 text-xs text-slate-700">
+              <span className="text-slate-400 font-medium">Agent:</span>
+              <select
+                value={agentFilter}
+                onChange={(e) => handleFilterChange('assigned_to', e.target.value)}
+                className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+              >
+                <option value="all">All Agents</option>
+                {agentsList.map((ag) => (
+                  <option key={ag.id} value={ag.id}>
+                    {ag.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Clear Filters Button */}
           {isAnyFilterActive && (
@@ -450,7 +527,7 @@ export const FollowUpsPage = () => {
               title={isAnyFilterActive ? 'No follow-ups match your current filters' : 'No follow-ups scheduled yet'}
               description={
                 isAnyFilterActive
-                  ? 'Try adjusting your status, type, or search term.'
+                  ? 'Try adjusting your status, type, agent, or search term.'
                   : 'Stay organized with scheduled callbacks, demos, and follow-ups.'
               }
               action={
@@ -474,9 +551,10 @@ export const FollowUpsPage = () => {
                   <TableRow>
                     <TableHeaderCell>ID</TableHeaderCell>
                     <TableHeaderCell>Customer</TableHeaderCell>
+                    <TableHeaderCell>Phone</TableHeaderCell>
                     <TableHeaderCell>Type</TableHeaderCell>
                     <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Scheduled Time</TableHeaderCell>
+                    <TableHeaderCell>Scheduled</TableHeaderCell>
                     <TableHeaderCell>Assigned Agent</TableHeaderCell>
                     <TableHeaderCell>Call Ref</TableHeaderCell>
                     <TableHeaderCell className="text-right">Actions</TableHeaderCell>
@@ -487,6 +565,8 @@ export const FollowUpsPage = () => {
                     const customer = customersMap[fu.customer_id];
                     const agent = agentsMap[fu.assigned_to];
                     const isPending = fu.status !== 'completed' && fu.status !== 'cancelled';
+                    const isOverdue = isFollowUpOverdue(fu.scheduled_at, fu.status);
+                    const isDueToday = isFollowUpDueToday(fu.scheduled_at);
 
                     return (
                       <TableRow
@@ -505,44 +585,55 @@ export const FollowUpsPage = () => {
                             onClick={() => handleOpenDetailsModal(fu)}
                             className="font-semibold text-slate-900 hover:text-indigo-600 text-left hover:underline cursor-pointer transition-colors"
                           >
-                            {customer?.name || `Customer #${fu.customer_id}`}
+                            {formatCustomerName(customer?.name) || `Customer #${fu.customer_id}`}
                           </button>
-                          <div className="text-xs text-slate-500 font-mono">
+                        </TableCell>
+
+                        {/* Phone */}
+                        <TableCell>
+                          <span className="text-xs text-slate-600 font-mono">
                             {formatPhoneNumber(customer?.phone || '')}
-                          </div>
+                          </span>
                         </TableCell>
 
                         {/* Type */}
                         <TableCell>
-                          <span className="text-xs font-medium text-slate-800 inline-flex items-center gap-1.5">
-                            <span>{TYPE_ICONS[fu.follow_up_type] || '📝'}</span>
-                            <span className="capitalize">{fu.follow_up_type}</span>
-                          </span>
+                          <Badge variant={getFollowUpTypeVariant(fu.follow_up_type)} size="sm">
+                            {formatFollowUpType(fu.follow_up_type)}
+                          </Badge>
                         </TableCell>
 
                         {/* Status */}
                         <TableCell>
-                          <Badge variant={getStatusVariant(fu.status)} size="sm">
-                            {fu.status}
-                          </Badge>
+                          <div className="flex items-center gap-1.5">
+                            {isPending && isOverdue && (
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                              </span>
+                            )}
+                            <Badge variant={getFollowUpStatusVariant(fu.status, fu.scheduled_at)} size="sm">
+                              {formatFollowUpStatus(fu.status, fu.scheduled_at)}
+                            </Badge>
+                          </div>
                         </TableCell>
 
                         {/* Scheduled Time */}
                         <TableCell>
-                          <span className="text-xs font-medium text-slate-800 whitespace-nowrap">
-                            {formatDateTime(fu.scheduled_at)}
-                          </span>
-                          {fu.completed_at && (
-                            <div className="text-[10px] text-emerald-600">
-                              Completed: {formatDateTime(fu.completed_at)}
-                            </div>
-                          )}
+                          <div>
+                            <span className={`text-xs font-semibold block ${isOverdue ? 'text-rose-700' : isDueToday ? 'text-amber-700' : 'text-slate-800'}`}>
+                              {formatRelativeDueTime(fu.scheduled_at, fu.status)}
+                            </span>
+                            <span className="text-[11px] text-slate-400 block">
+                              {formatDateTime(fu.scheduled_at)}
+                            </span>
+                          </div>
                         </TableCell>
 
                         {/* Agent */}
                         <TableCell>
                           <span className="text-xs text-slate-700 font-medium">
-                            {agent?.name || `User #${fu.assigned_to}`}
+                            {agent?.name || `Agent #${fu.assigned_to}`}
                           </span>
                         </TableCell>
 
@@ -584,17 +675,19 @@ export const FollowUpsPage = () => {
                               </svg>
                             </button>
 
-                            {/* Edit */}
-                            <button
-                              onClick={() => handleOpenEditModal(fu)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
-                              title="Edit Follow-up"
-                              aria-label="Edit Follow-up"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </button>
+                            {/* Edit (Pending Only) */}
+                            {isPending && (
+                              <button
+                                onClick={() => handleOpenEditModal(fu)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+                                title="Edit Follow-up"
+                                aria-label="Edit Follow-up"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                            )}
 
                             {/* Delete */}
                             <button
@@ -663,8 +756,10 @@ export const FollowUpsPage = () => {
         customer={customersMap[detailsFollowUp?.customer_id]}
         agent={agentsMap[detailsFollowUp?.assigned_to]}
         onComplete={handleCompleteFollowUp}
+        onCancel={handleCancelFollowUp}
         onEdit={handleOpenEditModal}
         isCompleting={completingId === detailsFollowUp?.id}
+        isCancelling={cancellingId === detailsFollowUp?.id}
       />
 
       {/* 3. Delete Confirmation Modal */}
@@ -672,7 +767,7 @@ export const FollowUpsPage = () => {
         <Modal
           isOpen={isDeleteModalOpen}
           onClose={() => !isDeleting && setIsDeleteModalOpen(false)}
-          title="Cancel Follow-up Task"
+          title="Delete Follow-up Task"
           maxWidth="max-w-md"
           footer={
             <>
@@ -698,7 +793,7 @@ export const FollowUpsPage = () => {
         >
           <div className="text-left text-sm text-slate-600 space-y-2">
             <p>
-              Are you sure you want to cancel Follow-up task <strong className="font-semibold text-slate-900">#{deletingFollowUp.id}</strong>?
+              Are you sure you want to delete Follow-up task <strong className="font-semibold text-slate-900">#{deletingFollowUp.id}</strong>?
             </p>
             <p className="text-xs text-slate-500">
               This will remove the scheduled callback from active queues and calendar reminders.

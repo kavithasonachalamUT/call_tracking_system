@@ -34,6 +34,7 @@ export const CreateCallModal = ({
   const [isCustomerDropdownOpen, setIsCustomerDropdownOpen] = useState(false);
 
   const [direction, setDirection] = useState('outgoing');
+  const [platform, setPlatform] = useState('phone');
   const [status, setStatus] = useState('initiated');
   const [durationMinutes, setDurationMinutes] = useState('00');
   const [durationSeconds, setDurationSeconds] = useState('00');
@@ -66,25 +67,24 @@ export const CreateCallModal = ({
       } finally {
         if (isMounted) {
           setIsLoadingCustomers(false);
+          setSelectedCustomer(null);
+          setCustomerSearchQuery('');
+          setIsCustomerDropdownOpen(false);
+          setDirection('outgoing');
+          setPlatform('phone');
+          setStatus('initiated');
+          setDurationMinutes('00');
+          setDurationSeconds('00');
+          setOutcome('pending');
+          setNotes('');
+          setSubject('');
+          setFieldErrors({});
+          setServerError('');
         }
       }
     };
 
     fetchCustomers();
-
-    // Reset Form Fields
-    setSelectedCustomer(null);
-    setCustomerSearchQuery('');
-    setIsCustomerDropdownOpen(false);
-    setDirection('outgoing');
-    setStatus('initiated');
-    setDurationMinutes('00');
-    setDurationSeconds('00');
-    setOutcome('pending');
-    setNotes('');
-    setSubject('');
-    setFieldErrors({});
-    setServerError('');
 
     return () => {
       isMounted = false;
@@ -174,7 +174,7 @@ export const CreateCallModal = ({
       const payload = {
         customer_id: selectedCustomer.id,
         direction,
-        platform: 'phone',
+        platform: platform || 'phone',
         status,
         duration_seconds: totalDurationSeconds > 0 ? totalDurationSeconds : null,
         subject: subject.trim() || null,
@@ -397,8 +397,29 @@ export const CreateCallModal = ({
             </div>
           </div>
 
-          {/* 3. Status & Outcome Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* 3. Platform, Status & Outcome Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Platform */}
+            <div>
+              <label htmlFor="call-platform" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Platform <span className="text-rose-500">*</span>
+              </label>
+              <select
+                id="call-platform"
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value)}
+                disabled={isSubmitting}
+                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
+              >
+                <option value="phone">☎ Phone</option>
+                <option value="whatsapp">💬 WhatsApp</option>
+                <option value="google_meet">💻 Google Meet</option>
+                <option value="microsoft_teams">👥 Teams</option>
+                <option value="zoom">📹 Zoom</option>
+                <option value="other">📝 Other</option>
+              </select>
+            </div>
+
             {/* Status */}
             <div>
               <label htmlFor="call-status" className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -409,7 +430,7 @@ export const CreateCallModal = ({
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none"
+                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
               >
                 {STATUS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -429,7 +450,7 @@ export const CreateCallModal = ({
                 value={outcome}
                 onChange={(e) => setOutcome(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none"
+                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
               >
                 {OUTCOME_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>

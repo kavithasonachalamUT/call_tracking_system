@@ -67,6 +67,24 @@ export const customerService = {
    * @param {number} customerId
    * @returns {Promise<any>}
    */
+  deactivateCustomer: async (customerId) => {
+    const response = await apiClient.delete(`/customers/${customerId}`);
+    return response.data;
+  },
+
+  /**
+   * Reactivate customer profile
+   * @param {number} customerId
+   * @returns {Promise<any>}
+   */
+  activateCustomer: async (customerId) => {
+    const response = await apiClient.put(`/customers/${customerId}`, { is_active: true });
+    return response.data;
+  },
+
+  /**
+   * Alias for backward compatibility
+   */
   deleteCustomer: async (customerId) => {
     const response = await apiClient.delete(`/customers/${customerId}`);
     return response.data;

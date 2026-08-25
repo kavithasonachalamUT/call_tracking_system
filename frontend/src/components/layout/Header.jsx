@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import apiClient from '../../services/api';
 import Badge from '../ui/Badge';
+import { getRoleDisplayName, getRoleBadgeVariant, getUserProfileTag } from '../../utils/permissions';
 
 export const Header = ({ onOpenSidebar }) => {
   const { user, logout } = useAuth();
@@ -17,20 +18,27 @@ export const Header = ({ onOpenSidebar }) => {
   const searchInputRef = useRef(null);
   const dropdownRef = useRef(null);
 
-  // Fetch Unread Notification Count
+  // Fetch Unread Notification Count with lightweight periodic refresh
   useEffect(() => {
     let isMounted = true;
-    apiClient
-      .get('/notifications/summary')
-      .then((res) => {
-        if (isMounted) {
-          setUnreadCount(res.data?.unread_count || 0);
-        }
-      })
-      .catch(() => {});
+
+    const fetchSummary = () => {
+      apiClient
+        .get('/notifications/summary')
+        .then((res) => {
+          if (isMounted) {
+            setUnreadCount(res.data?.unread_count || 0);
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchSummary();
+    const interval = setInterval(fetchSummary, 30000);
 
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
   }, []);
 
@@ -111,6 +119,9 @@ export const Header = ({ onOpenSidebar }) => {
   };
 
   const totalResults = searchResults.customers.length + searchResults.calls.length;
+  const roleDisplay = getRoleDisplayName(user?.role);
+  const roleVariant = getRoleBadgeVariant(user?.role);
+  const profileTag = getUserProfileTag(user);
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs">
@@ -252,16 +263,23 @@ export const Header = ({ onOpenSidebar }) => {
           </div>
 
           <div className="hidden sm:flex flex-col text-left">
-            <span className="text-xs font-semibold text-slate-800 leading-tight">
-              {user?.name || 'User'}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-slate-800 leading-tight">
+                {user?.name || 'User'}
+              </span>
+              {profileTag && (
+                <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded">
+                  {profileTag}
+                </span>
+              )}
+            </div>
             <span className="text-[11px] text-slate-500 leading-tight">
               {user?.email || ''}
             </span>
           </div>
 
-          <Badge variant={user?.role === 'admin' ? 'purple' : 'gray'} size="sm" className="hidden sm:inline-flex">
-            {user?.role || 'agent'}
+          <Badge variant={roleVariant} size="sm" className="hidden sm:inline-flex font-bold">
+            {roleDisplay}
           </Badge>
 
           {/* Logout Button */}

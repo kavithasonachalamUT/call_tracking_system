@@ -40,6 +40,22 @@ export const auditLogService = {
     const response = await apiClient.get(`/audit-logs/${auditLogId}`);
     return response.data;
   },
+
+  /**
+   * Get audit trail for a specific call
+   * @param {number} callId
+   * @returns {Promise<Array<any>>}
+   */
+  getCallAuditTrail: async (callId) => {
+    const response = await apiClient.get('/audit-logs', {
+      params: {
+        entity_type: 'call',
+        entity_id: callId,
+        limit: 100,
+      },
+    });
+    return response.data;
+  },
 };
 
 export default auditLogService;

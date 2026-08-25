@@ -1,14 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { reportService } from '../services/reportService';
+import { userService } from '../services/userService';
 import {
-  formatDuration,
-  formatDateTime,
+  formatReportDuration,
+  formatReportDate,
+  formatReportNumber,
+  CALL_STATUS_LABELS,
+  DIRECTION_LABELS,
+  OUTCOME_LABELS,
+  FOLLOW_UP_TYPE_LABELS,
+} from '../utils/reportUtils';
+import {
   formatPhoneNumber,
   formatCustomerName,
-  formatCustomerStatus,
   getStatusVariant,
 } from '../utils/formatters';
+import { getRoleBadgeVariant, isAdmin, isManager, isAgent } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -19,26 +27,27 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import EmptyState from '../components/common/EmptyState';
 import ErrorMessage from '../components/common/ErrorMessage';
 
-const REPORT_TABS = [
-  { id: 'calls', label: 'Calls', icon: '☎' },
-  { id: 'customers', label: 'Customers', icon: '👥' },
-  { id: 'outcomes', label: 'Outcomes', icon: '✓' },
-  { id: 'follow-ups', label: 'Follow-ups', icon: '◷' },
-  { id: 'agents', label: 'Agent Performance', icon: '📊' },
-  { id: 'audit-logs', label: 'Audit Logs', icon: '🛡' },
-];
+const PAGE_SIZE = 10;
 
 export const ReportsPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState('calls');
 
   // Filter State
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [appliedFilters, setAppliedFilters] = useState({ start_date: undefined, end_date: undefined });
+  const [selectedAgentId, setSelectedAgentId] = useState('all');
+  const [selectedStatus, setSelectedStatus] = useState('all');
+  const [selectedDirection, setSelectedDirection] = useState('all');
+  const [selectedPlatform, setSelectedPlatform] = useState('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({});
   const [dateError, setDateError] = useState('');
+  const [currentPage, setCurrentPage] = useState(0);
+
+  // Reference Data
+  const [agentsList, setAgentsList] = useState([]);
 
   // Data States
   const [summary, setSummary] = useState(null);
@@ -49,6 +58,25 @@ export const ReportsPage = () => {
   const [toast, setToast] = useState(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
+  const canFilterAgents = isAdmin(user) || isManager(user);
+
+  // Available tabs based on role
+  const availableTabs = [
+    { id: 'calls', label: 'Calls', icon: '☎' },
+    { id: 'customers', label: 'Customers', icon: '👥' },
+    { id: 'outcomes', label: 'Outcomes', icon: '✓' },
+    { id: 'follow-ups', label: 'Follow-ups', icon: '◷' },
+    ...(!isAgent(user) ? [{ id: 'agents', label: 'Agent Performance', icon: '📊' }] : []),
+    ...(isAdmin(user) ? [{ id: 'audit-logs', label: 'Audit Logs', icon: '🛡' }] : []),
+  ];
+
+  // Fetch agents list for Admin/Manager
+  useEffect(() => {
+    if (canFilterAgents) {
+      userService.getUsers({ limit: 100 }).then(setAgentsList).catch(() => {});
+    }
+  }, [canFilterAgents]);
+
   // Fetch Summary and Active Report Data
   useEffect(() => {
     let isMounted = true;
@@ -58,31 +86,53 @@ export const ReportsPage = () => {
         setIsLoading(true);
         setError('');
 
-        const params = {};
+        const params = {
+          skip: currentPage * PAGE_SIZE,
+          limit: PAGE_SIZE + 1,
+        };
+
         if (appliedFilters.start_date) params.start_date = new Date(appliedFilters.start_date).toISOString();
         if (appliedFilters.end_date) {
           const endObj = new Date(appliedFilters.end_date);
           endObj.setHours(23, 59, 59, 999);
           params.end_date = endObj.toISOString();
         }
+        if (appliedFilters.agent_id && appliedFilters.agent_id !== 'all' && canFilterAgents) {
+          params.agent_id = parseInt(appliedFilters.agent_id, 10);
+        }
+        if (appliedFilters.status && appliedFilters.status !== 'all') {
+          params.status = appliedFilters.status;
+        }
+        if (appliedFilters.direction && appliedFilters.direction !== 'all') {
+          params.direction = appliedFilters.direction;
+        }
+        if (appliedFilters.platform && appliedFilters.platform !== 'all') {
+          params.platform = appliedFilters.platform;
+        }
+        if (appliedFilters.search) {
+          params.search = appliedFilters.search;
+        }
 
         // Fetch Summary
-        const summaryData = await reportService.getReportSummary(params).catch(() => null);
+        const summaryParams = {};
+        if (params.start_date) summaryParams.start_date = params.start_date;
+        if (params.end_date) summaryParams.end_date = params.end_date;
+        const summaryData = await reportService.getReportSummary(summaryParams).catch(() => null);
 
         // Fetch Tab-Specific Data
         let data = [];
         if (activeTab === 'calls') {
-          data = await reportService.getCallReport({ ...params, limit: 100 });
+          data = await reportService.getCallReport(params);
         } else if (activeTab === 'customers') {
-          data = await reportService.getCustomerReport({ ...params, limit: 100 });
+          data = await reportService.getCustomerReport(params);
         } else if (activeTab === 'outcomes') {
-          data = await reportService.getOutcomeReport({ ...params, limit: 100 });
+          data = await reportService.getOutcomeReport(params);
         } else if (activeTab === 'follow-ups') {
-          data = await reportService.getFollowUpReport({ ...params, limit: 100 });
+          data = await reportService.getFollowUpReport(params);
         } else if (activeTab === 'agents') {
           data = await reportService.getAgentPerformanceReport(params);
         } else if (activeTab === 'audit-logs') {
-          data = await reportService.getAuditReport({ ...params, limit: 100 });
+          data = await reportService.getAuditReport(params);
         }
 
         if (isMounted) {
@@ -105,7 +155,7 @@ export const ReportsPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [activeTab, appliedFilters, refreshTrigger]);
+  }, [activeTab, appliedFilters, currentPage, refreshTrigger, canFilterAgents]);
 
   const handleApplyFilters = (e) => {
     e.preventDefault();
@@ -114,17 +164,29 @@ export const ReportsPage = () => {
       return;
     }
     setDateError('');
+    setCurrentPage(0);
     setAppliedFilters({
       start_date: startDate || undefined,
       end_date: endDate || undefined,
+      agent_id: selectedAgentId !== 'all' ? selectedAgentId : undefined,
+      status: selectedStatus !== 'all' ? selectedStatus : undefined,
+      direction: selectedDirection !== 'all' ? selectedDirection : undefined,
+      platform: selectedPlatform !== 'all' ? selectedPlatform : undefined,
+      search: searchTerm.trim() || undefined,
     });
   };
 
   const handleClearFilters = () => {
     setStartDate('');
     setEndDate('');
+    setSelectedAgentId('all');
+    setSelectedStatus('all');
+    setSelectedDirection('all');
+    setSelectedPlatform('all');
+    setSearchTerm('');
     setDateError('');
-    setAppliedFilters({ start_date: undefined, end_date: undefined });
+    setCurrentPage(0);
+    setAppliedFilters({});
   };
 
   // CSV Export Handler
@@ -137,6 +199,21 @@ export const ReportsPage = () => {
         const endObj = new Date(appliedFilters.end_date);
         endObj.setHours(23, 59, 59, 999);
         params.end_date = endObj.toISOString();
+      }
+      if (appliedFilters.agent_id && appliedFilters.agent_id !== 'all' && canFilterAgents) {
+        params.agent_id = parseInt(appliedFilters.agent_id, 10);
+      }
+      if (appliedFilters.status && appliedFilters.status !== 'all') {
+        params.status = appliedFilters.status;
+      }
+      if (appliedFilters.direction && appliedFilters.direction !== 'all') {
+        params.direction = appliedFilters.direction;
+      }
+      if (appliedFilters.platform && appliedFilters.platform !== 'all') {
+        params.platform = appliedFilters.platform;
+      }
+      if (appliedFilters.search) {
+        params.search = appliedFilters.search;
       }
 
       if (activeTab === 'calls') {
@@ -153,7 +230,7 @@ export const ReportsPage = () => {
         await reportService.exportAuditReport(params);
       }
 
-      setToast({ message: `✓ ${activeTab.toUpperCase()} CSV exported successfully`, type: 'success' });
+      setToast({ message: `✓ ${activeTab.toUpperCase().replace('-', ' ')} CSV exported successfully`, type: 'success' });
     } catch (err) {
       setToast({ message: err.message || 'Unable to export this report. Please try again.', type: 'error' });
     } finally {
@@ -161,16 +238,31 @@ export const ReportsPage = () => {
     }
   };
 
-  const isFilterActive = !!(appliedFilters.start_date || appliedFilters.end_date);
+  const isFilterActive = Object.values(appliedFilters).some(Boolean);
+  const displayedData = reportData.slice(0, PAGE_SIZE);
+  const hasNextPage = reportData.length > PAGE_SIZE;
+
+  // Role-aware Page Title & Subtitle
+  const pageTitle = isAdmin(user)
+    ? 'Organization Reports'
+    : isManager(user)
+    ? 'Team Reports'
+    : 'My Reports';
+
+  const pageSubtitle = isAdmin(user)
+    ? 'Generate and export organization-wide call, customer, outcome, and agent reports'
+    : isManager(user)
+    ? 'Generate and export team call, customer, outcome, and performance reports'
+    : 'Generate and export your personal call and task activity reports';
 
   return (
     <PageContainer
-      title="Reports"
-      subtitle="Generate, filter, and export detailed call, outcome, customer, and agent activity records"
+      title={pageTitle}
+      subtitle={pageSubtitle}
       actions={
         <div className="flex items-center gap-2.5">
-          <Badge variant={isAdmin ? 'purple' : 'indigo'} size="md">
-            {isAdmin ? 'Organization Reports' : 'My Reports'}
+          <Badge variant={getRoleBadgeVariant(user?.role)} size="md">
+            {isAdmin(user) ? 'ORGANIZATION SCOPE' : isManager(user) ? 'TEAM SCOPE' : 'PERSONAL SCOPE'}
           </Badge>
 
           <Button
@@ -191,13 +283,13 @@ export const ReportsPage = () => {
             size="sm"
             onClick={handleExportCSV}
             isLoading={isExporting}
-            disabled={isExporting || isLoading || reportData.length === 0}
+            disabled={isExporting || isLoading || displayedData.length === 0}
             className="shadow-xs"
           >
             <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
-            <span>Export CSV</span>
+            <span>{isExporting ? 'Exporting...' : `Export ${activeTab.replace('-', ' ').toUpperCase()} CSV`}</span>
           </Button>
         </div>
       }
@@ -221,10 +313,11 @@ export const ReportsPage = () => {
         />
       )}
 
-      {/* 1. Date Range Filters Card */}
-      <div className="mb-6 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-        <form onSubmit={handleApplyFilters} className="flex flex-wrap items-center justify-between gap-3.5">
-          <div className="flex flex-wrap items-center gap-3">
+      {/* 1. Filter Section */}
+      <div className="mb-6 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
+        <form onSubmit={handleApplyFilters} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Start Date */}
             <div>
               <label htmlFor="start-date" className="block text-[11px] font-semibold text-slate-500 mb-1">
                 Start Date
@@ -234,10 +327,11 @@ export const ReportsPage = () => {
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
 
+            {/* End Date */}
             <div>
               <label htmlFor="end-date" className="block text-[11px] font-semibold text-slate-500 mb-1">
                 End Date
@@ -247,28 +341,144 @@ export const ReportsPage = () => {
                 type="date"
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
-                className="h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
 
-            <div className="pt-5 flex items-center gap-2">
-              <Button variant="primary" size="sm" type="submit" className="h-9 text-xs">
-                Apply Range
+            {/* Agent Filter (Admin / Manager) */}
+            {canFilterAgents && (
+              <div>
+                <label htmlFor="agent-filter" className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Agent
+                </label>
+                <select
+                  id="agent-filter"
+                  value={selectedAgentId}
+                  onChange={(e) => setSelectedAgentId(e.target.value)}
+                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="all">All Agents</option>
+                  {agentsList.map((ag) => (
+                    <option key={ag.id} value={ag.id}>
+                      {ag.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Status Filter (Calls / Follow-ups) */}
+            {(activeTab === 'calls' || activeTab === 'follow-ups') && (
+              <div>
+                <label htmlFor="status-filter" className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Status
+                </label>
+                <select
+                  id="status-filter"
+                  value={selectedStatus}
+                  onChange={(e) => setSelectedStatus(e.target.value)}
+                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="all">All Statuses</option>
+                  {activeTab === 'calls' ? (
+                    <>
+                      <option value="initiated">Initiated</option>
+                      <option value="ringing">Ringing</option>
+                      <option value="ongoing">Ongoing</option>
+                      <option value="completed">Completed</option>
+                      <option value="missed">Missed</option>
+                      <option value="failed">Failed</option>
+                      <option value="cancelled">Cancelled</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="pending">Pending</option>
+                      <option value="in_progress">In Progress</option>
+                      <option value="completed">Completed</option>
+                      <option value="cancelled">Cancelled</option>
+                    </>
+                  )}
+                </select>
+              </div>
+            )}
+
+            {/* Direction Filter (Calls) */}
+            {activeTab === 'calls' && (
+              <div>
+                <label htmlFor="direction-filter" className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Direction
+                </label>
+                <select
+                  id="direction-filter"
+                  value={selectedDirection}
+                  onChange={(e) => setSelectedDirection(e.target.value)}
+                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="all">All Directions</option>
+                  <option value="incoming">Incoming</option>
+                  <option value="outgoing">Outgoing</option>
+                </select>
+              </div>
+            )}
+
+            {/* Platform Filter (Calls) */}
+            {activeTab === 'calls' && (
+              <div>
+                <label htmlFor="platform-filter" className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Platform
+                </label>
+                <select
+                  id="platform-filter"
+                  value={selectedPlatform}
+                  onChange={(e) => setSelectedPlatform(e.target.value)}
+                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="all">All Platforms</option>
+                  <option value="twilio">Twilio</option>
+                  <option value="plivo">Plivo</option>
+                  <option value="exotel">Exotel</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+            )}
+
+            {/* Search (Calls / Customers) */}
+            {(activeTab === 'calls' || activeTab === 'customers') && (
+              <div>
+                <label htmlFor="search-filter" className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Search Query
+                </label>
+                <input
+                  id="search-filter"
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search name, phone, notes..."
+                  className="w-full h-9 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+            <div className="flex items-center gap-2">
+              <Button variant="primary" size="sm" type="submit">
+                Apply Filters
               </Button>
 
               {isFilterActive && (
-                <Button variant="outline" size="sm" onClick={handleClearFilters} className="h-9 text-xs">
-                  Clear
+                <Button variant="outline" size="sm" onClick={handleClearFilters}>
+                  Reset
                 </Button>
               )}
             </div>
-          </div>
 
-          {isFilterActive && (
-            <Badge variant="indigo" size="sm">
-              Filtered: {appliedFilters.start_date || 'Earliest'} → {appliedFilters.end_date || 'Latest'}
-            </Badge>
-          )}
+            {isFilterActive && (
+              <Badge variant="indigo" size="sm">
+                Active Filter Applied
+              </Badge>
+            )}
+          </div>
         </form>
 
         {dateError && (
@@ -281,28 +491,28 @@ export const ReportsPage = () => {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 mb-6">
           <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
             <span className="text-xs font-semibold text-slate-500 block">Total Calls</span>
-            <span className="text-xl font-bold text-slate-900 mt-1 block">{summary.total_calls}</span>
+            <span className="text-xl font-bold text-slate-900 mt-1 block">{formatReportNumber(summary.total_calls)}</span>
           </div>
 
           <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
             <span className="text-xs font-semibold text-slate-500 block">Total Customers</span>
-            <span className="text-xl font-bold text-slate-900 mt-1 block">{summary.total_customers}</span>
+            <span className="text-xl font-bold text-slate-900 mt-1 block">{formatReportNumber(summary.total_customers)}</span>
           </div>
 
           <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
             <span className="text-xs font-semibold text-slate-500 block">Total Outcomes</span>
-            <span className="text-xl font-bold text-slate-900 mt-1 block">{summary.total_outcomes}</span>
+            <span className="text-xl font-bold text-slate-900 mt-1 block">{formatReportNumber(summary.total_outcomes)}</span>
           </div>
 
           <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
             <span className="text-xs font-semibold text-slate-500 block">Total Follow-ups</span>
-            <span className="text-xl font-bold text-slate-900 mt-1 block">{summary.total_follow_ups}</span>
+            <span className="text-xl font-bold text-slate-900 mt-1 block">{formatReportNumber(summary.total_follow_ups)}</span>
           </div>
 
           <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs col-span-2 sm:col-span-1">
-            <span className="text-xs font-semibold text-slate-500 block">Total Duration</span>
+            <span className="text-xs font-semibold text-slate-500 block">Total Talk Time</span>
             <span className="text-xl font-mono font-bold text-indigo-600 mt-1 block">
-              {formatDuration(summary.total_duration_seconds)}
+              {formatReportDuration(summary.total_duration_seconds)}
             </span>
           </div>
         </div>
@@ -310,12 +520,15 @@ export const ReportsPage = () => {
 
       {/* 3. Report Tab Selector */}
       <div className="flex items-center gap-1.5 p-1.5 bg-slate-100/90 rounded-2xl border border-slate-200 mb-6 overflow-x-auto">
-        {REPORT_TABS.map((tab) => {
+        {availableTabs.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id);
+                setCurrentPage(0);
+              }}
               className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all cursor-pointer ${
                 isActive
                   ? 'bg-white text-indigo-700 shadow-xs border border-slate-200 font-bold'
@@ -334,10 +547,10 @@ export const ReportsPage = () => {
         <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h2 className="text-base font-bold text-slate-900 tracking-tight capitalize">
-              {activeTab.replace('-', ' ')} Report
+              {activeTab.replace('-', ' ')} Report Records
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Showing {reportData.length} records {isFilterActive && '(Filtered by Date Range)'}
+              Page {currentPage + 1} • {displayedData.length} records shown {isFilterActive && '(Filtered)'}
             </p>
           </div>
 
@@ -346,225 +559,382 @@ export const ReportsPage = () => {
             size="sm"
             onClick={handleExportCSV}
             isLoading={isExporting}
-            disabled={isExporting || isLoading || reportData.length === 0}
+            disabled={isExporting || isLoading || displayedData.length === 0}
             className="text-xs"
           >
             <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
-            <span>Download CSV</span>
+            <span>{isExporting ? 'Exporting...' : 'Export CSV'}</span>
           </Button>
         </div>
 
         {isLoading ? (
           <div className="py-20 flex flex-col items-center justify-center">
             <LoadingSpinner size="lg" />
-            <p className="mt-3 text-xs font-medium text-slate-500">Loading {activeTab} data...</p>
+            <p className="mt-3 text-xs font-medium text-slate-500">Querying report records...</p>
           </div>
-        ) : reportData.length === 0 ? (
+        ) : displayedData.length === 0 ? (
           <div className="p-8">
             <EmptyState
-              title={`No ${activeTab.replace('-', ' ')} data available`}
-              description="Try selecting a wider date range or logging new activity."
+              title={isFilterActive ? 'No report records match your filters' : 'No records found'}
+              description={
+                isFilterActive
+                  ? 'Try broadening your date range or clearing specific filter criteria.'
+                  : `No ${activeTab.replace('-', ' ')} activity has been recorded yet.`
+              }
+              action={
+                isFilterActive ? (
+                  <Button variant="outline" size="sm" onClick={handleClearFilters}>
+                    Reset Filters
+                  </Button>
+                ) : null
+              }
             />
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            {/* TAB 1: CALLS REPORT */}
-            {activeTab === 'calls' && (
+          <>
+            <div className="overflow-x-auto">
               <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>ID</TableHeaderCell>
-                    <TableHeaderCell>Customer</TableHeaderCell>
-                    <TableHeaderCell>Phone</TableHeaderCell>
-                    <TableHeaderCell>Agent</TableHeaderCell>
-                    <TableHeaderCell>Direction</TableHeaderCell>
-                    <TableHeaderCell>Platform</TableHeaderCell>
-                    <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Duration</TableHeaderCell>
-                    <TableHeaderCell>Started At</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => (
-                    <TableRow key={row.call_id} className="hover:bg-slate-50">
-                      <TableCell><span className="font-mono font-bold text-xs text-slate-500">#{row.call_id}</span></TableCell>
-                      <TableCell><span className="font-semibold text-slate-900">{row.customer_name}</span></TableCell>
-                      <TableCell><span className="font-mono text-xs text-slate-600">{formatPhoneNumber(row.customer_phone)}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-700">{row.agent_name}</span></TableCell>
-                      <TableCell><Badge variant={row.direction === 'outgoing' ? 'blue' : 'indigo'} size="sm">{row.direction?.toUpperCase()}</Badge></TableCell>
-                      <TableCell><span className="text-xs capitalize">{row.platform}</span></TableCell>
-                      <TableCell><Badge variant={getStatusVariant(row.status)} size="sm">{row.status}</Badge></TableCell>
-                      <TableCell><span className="font-mono text-xs font-semibold">{formatDuration(row.duration_seconds)}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-500">{formatDateTime(row.started_at || row.created_at)}</span></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-
-            {/* TAB 2: CUSTOMERS REPORT */}
-            {activeTab === 'customers' && (
-              <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>ID</TableHeaderCell>
-                    <TableHeaderCell>Customer Name</TableHeaderCell>
-                    <TableHeaderCell>Phone Number</TableHeaderCell>
-                    <TableHeaderCell>Email</TableHeaderCell>
-                    <TableHeaderCell>Company</TableHeaderCell>
-                    <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Created At</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => {
-                    const statusInfo = formatCustomerStatus(row.is_active);
-                    return (
-                      <TableRow key={row.customer_id} className="hover:bg-slate-50">
-                        <TableCell><span className="font-mono font-bold text-xs text-slate-500">#{row.customer_id}</span></TableCell>
-                        <TableCell><span className="font-semibold text-slate-900">{formatCustomerName(row.name)}</span></TableCell>
-                        <TableCell><span className="font-mono text-xs text-slate-600">{formatPhoneNumber(row.phone)}</span></TableCell>
-                        <TableCell><span className="text-xs text-slate-600">{row.email || '—'}</span></TableCell>
-                        <TableCell><span className="text-xs font-medium text-slate-700">{row.company || '—'}</span></TableCell>
-                        <TableCell><Badge variant={statusInfo.variant} size="sm">{statusInfo.label}</Badge></TableCell>
-                        <TableCell><span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span></TableCell>
+                {/* 1. Calls Table */}
+                {activeTab === 'calls' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>ID</TableHeaderCell>
+                        <TableHeaderCell>Customer</TableHeaderCell>
+                        <TableHeaderCell>Agent</TableHeaderCell>
+                        <TableHeaderCell>Direction</TableHeaderCell>
+                        <TableHeaderCell>Platform</TableHeaderCell>
+                        <TableHeaderCell>Status</TableHeaderCell>
+                        <TableHeaderCell>Duration</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Call Time</TableHeaderCell>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.call_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <span className="font-mono text-xs font-bold text-slate-500">#{row.call_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-semibold text-slate-900">{formatCustomerName(row.customer_name) || `Customer #${row.customer_id}`}</div>
+                            <div className="text-[11px] text-slate-400 font-mono">{formatPhoneNumber(row.customer_phone || '')}</div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-700">{row.agent_name || `Agent #${row.agent_id}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
+                              {DIRECTION_LABELS[row.direction] || row.direction}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs text-slate-600 uppercase">{row.platform}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={getStatusVariant(row.status)} size="sm">
+                              {CALL_STATUS_LABELS[row.status] || row.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs font-semibold text-slate-800">
+                              {formatReportDuration(row.duration_seconds)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs text-slate-500">{formatReportDate(row.started_at || row.created_at)}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
 
-            {/* TAB 3: OUTCOMES REPORT */}
-            {activeTab === 'outcomes' && (
-              <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>Outcome ID</TableHeaderCell>
-                    <TableHeaderCell>Call Ref</TableHeaderCell>
-                    <TableHeaderCell>Customer</TableHeaderCell>
-                    <TableHeaderCell>Agent</TableHeaderCell>
-                    <TableHeaderCell>Outcome</TableHeaderCell>
-                    <TableHeaderCell>Notes</TableHeaderCell>
-                    <TableHeaderCell>Created At</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => (
-                    <TableRow key={row.outcome_id} className="hover:bg-slate-50">
-                      <TableCell><span className="font-mono font-bold text-xs text-slate-500">#{row.outcome_id}</span></TableCell>
-                      <TableCell><span className="font-mono font-semibold text-indigo-600 text-xs">Call #{row.call_id}</span></TableCell>
-                      <TableCell><span className="font-semibold text-slate-900">{row.customer_name}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-700">{row.agent_name}</span></TableCell>
-                      <TableCell><Badge variant={getStatusVariant(row.outcome)} size="sm">{row.outcome}</Badge></TableCell>
-                      <TableCell><span className="text-xs text-slate-600 line-clamp-1">{row.notes || '—'}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+                {/* 2. Customers Table */}
+                {activeTab === 'customers' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>ID</TableHeaderCell>
+                        <TableHeaderCell>Name</TableHeaderCell>
+                        <TableHeaderCell>Phone</TableHeaderCell>
+                        <TableHeaderCell>Email</TableHeaderCell>
+                        <TableHeaderCell>Company</TableHeaderCell>
+                        <TableHeaderCell>Status</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Created Date</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.customer_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <span className="font-mono text-xs font-bold text-slate-500">#{row.customer_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold text-slate-900">{formatCustomerName(row.name)}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs text-slate-600">{formatPhoneNumber(row.phone || '')}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-600">{row.email || '—'}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-600">{row.company || '—'}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.is_active ? 'green' : 'gray'} size="sm">
+                              {row.is_active ? 'Active' : 'Inactive'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs text-slate-500">{formatReportDate(row.created_at)}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
 
-            {/* TAB 4: FOLLOW-UPS REPORT */}
-            {activeTab === 'follow-ups' && (
-              <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>Task ID</TableHeaderCell>
-                    <TableHeaderCell>Call Ref</TableHeaderCell>
-                    <TableHeaderCell>Customer</TableHeaderCell>
-                    <TableHeaderCell>Assigned User</TableHeaderCell>
-                    <TableHeaderCell>Task Type</TableHeaderCell>
-                    <TableHeaderCell>Status</TableHeaderCell>
-                    <TableHeaderCell>Scheduled At</TableHeaderCell>
-                    <TableHeaderCell>Completed At</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => (
-                    <TableRow key={row.follow_up_id} className="hover:bg-slate-50">
-                      <TableCell><span className="font-mono font-bold text-xs text-slate-500">#{row.follow_up_id}</span></TableCell>
-                      <TableCell><span className="font-mono font-semibold text-indigo-600 text-xs">Call #{row.call_id}</span></TableCell>
-                      <TableCell><span className="font-semibold text-slate-900">{row.customer_name}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-700">{row.assigned_user_name}</span></TableCell>
-                      <TableCell><span className="text-xs capitalize font-medium">{row.follow_up_type}</span></TableCell>
-                      <TableCell><Badge variant={getStatusVariant(row.status)} size="sm">{row.status}</Badge></TableCell>
-                      <TableCell><span className="text-xs font-semibold text-slate-800">{formatDateTime(row.scheduled_at)}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-500">{row.completed_at ? formatDateTime(row.completed_at) : '—'}</span></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+                {/* 3. Outcomes Table */}
+                {activeTab === 'outcomes' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>Outcome ID</TableHeaderCell>
+                        <TableHeaderCell>Call Ref</TableHeaderCell>
+                        <TableHeaderCell>Customer</TableHeaderCell>
+                        <TableHeaderCell>Agent</TableHeaderCell>
+                        <TableHeaderCell>Outcome</TableHeaderCell>
+                        <TableHeaderCell>Notes</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Created At</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.outcome_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <span className="font-mono text-xs font-bold text-slate-500">#{row.outcome_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs text-indigo-600 font-semibold">Call #{row.call_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold text-slate-900">{formatCustomerName(row.customer_name) || `Customer #${row.customer_id}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-700">{row.agent_name || `Agent #${row.agent_id}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.outcome === 'converted' || row.outcome === 'interested' ? 'green' : 'blue'} size="sm">
+                              {OUTCOME_LABELS[row.outcome] || row.outcome}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-600 line-clamp-1">{row.notes || '—'}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs text-slate-500">{formatReportDate(row.created_at)}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
 
-            {/* TAB 5: AGENTS REPORT */}
-            {activeTab === 'agents' && (
-              <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>Agent Name</TableHeaderCell>
-                    <TableHeaderCell>Email</TableHeaderCell>
-                    <TableHeaderCell>Total Calls</TableHeaderCell>
-                    <TableHeaderCell>Incoming</TableHeaderCell>
-                    <TableHeaderCell>Outgoing</TableHeaderCell>
-                    <TableHeaderCell>Completed</TableHeaderCell>
-                    <TableHeaderCell>Total Duration</TableHeaderCell>
-                    <TableHeaderCell>Avg Duration</TableHeaderCell>
-                    <TableHeaderCell>Outcomes</TableHeaderCell>
-                    <TableHeaderCell>Follow-ups</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => (
-                    <TableRow key={row.agent_id} className="hover:bg-slate-50">
-                      <TableCell><span className="font-semibold text-slate-900">{row.agent_name}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-500">{row.agent_email}</span></TableCell>
-                      <TableCell><span className="font-bold text-slate-900">{row.total_calls}</span></TableCell>
-                      <TableCell><span className="text-indigo-600 font-semibold text-xs">{row.incoming_calls}</span></TableCell>
-                      <TableCell><span className="text-blue-600 font-semibold text-xs">{row.outgoing_calls}</span></TableCell>
-                      <TableCell><Badge variant="green" size="sm">{row.completed_calls}</Badge></TableCell>
-                      <TableCell><span className="font-mono text-xs font-semibold">{formatDuration(row.total_duration_seconds)}</span></TableCell>
-                      <TableCell><span className="font-mono text-xs text-slate-600">{formatDuration(row.average_duration_seconds)}</span></TableCell>
-                      <TableCell><span className="text-xs font-semibold">{row.outcomes_recorded}</span></TableCell>
-                      <TableCell><span className="text-xs font-semibold text-amber-700">{row.follow_ups_assigned}</span></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+                {/* 4. Follow-ups Table */}
+                {activeTab === 'follow-ups' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>ID</TableHeaderCell>
+                        <TableHeaderCell>Customer</TableHeaderCell>
+                        <TableHeaderCell>Assigned Agent</TableHeaderCell>
+                        <TableHeaderCell>Type</TableHeaderCell>
+                        <TableHeaderCell>Status</TableHeaderCell>
+                        <TableHeaderCell>Scheduled</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Completed</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.follow_up_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <span className="font-mono text-xs font-bold text-slate-500">#{row.follow_up_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold text-slate-900">{formatCustomerName(row.customer_name) || `Customer #${row.customer_id}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-700">{row.assigned_user_name || `Agent #${row.assigned_to}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs font-semibold text-slate-700">
+                              {FOLLOW_UP_TYPE_LABELS[row.follow_up_type] || row.follow_up_type}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.status === 'completed' ? 'green' : row.status === 'cancelled' ? 'gray' : 'amber'} size="sm">
+                              {row.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-800 font-semibold">{formatReportDate(row.scheduled_at)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs text-slate-500">{formatReportDate(row.completed_at)}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
 
-            {/* TAB 6: AUDIT LOGS REPORT */}
-            {activeTab === 'audit-logs' && (
-              <Table className="border-0 rounded-none shadow-none">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>Audit ID</TableHeaderCell>
-                    <TableHeaderCell>User</TableHeaderCell>
-                    <TableHeaderCell>Action</TableHeaderCell>
-                    <TableHeaderCell>Entity Type</TableHeaderCell>
-                    <TableHeaderCell>Entity ID</TableHeaderCell>
-                    <TableHeaderCell>Description / Justification</TableHeaderCell>
-                    <TableHeaderCell>Logged At</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {reportData.map((row) => (
-                    <TableRow key={row.audit_id} className="hover:bg-slate-50">
-                      <TableCell><span className="font-mono font-bold text-xs text-slate-500">#{row.audit_id}</span></TableCell>
-                      <TableCell><span className="font-semibold text-slate-900">{row.user_name}</span></TableCell>
-                      <TableCell><Badge variant="purple" size="sm">{row.action}</Badge></TableCell>
-                      <TableCell><Badge variant="gray" size="sm">{row.entity_type}</Badge></TableCell>
-                      <TableCell><span className="font-mono text-xs text-slate-700">#{row.entity_id}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-700 max-w-xs line-clamp-2">{row.description}</span></TableCell>
-                      <TableCell><span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
+                {/* 5. Agent Performance Table */}
+                {activeTab === 'agents' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>Agent</TableHeaderCell>
+                        <TableHeaderCell>Total Calls</TableHeaderCell>
+                        <TableHeaderCell>Incoming / Outgoing</TableHeaderCell>
+                        <TableHeaderCell>Completed</TableHeaderCell>
+                        <TableHeaderCell>Talk Time</TableHeaderCell>
+                        <TableHeaderCell>Avg Duration</TableHeaderCell>
+                        <TableHeaderCell>Outcomes</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Follow-ups</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.agent_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <div className="font-semibold text-slate-900">{row.agent_name}</div>
+                            <div className="text-xs text-slate-400">{row.agent_email}</div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-bold text-slate-900">{formatReportNumber(row.total_calls)}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-700">
+                              <span className="text-indigo-600 font-semibold">{row.incoming_calls} in</span> • <span className="text-blue-600 font-semibold">{row.outgoing_calls} out</span>
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="green" size="sm">{row.completed_calls}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs font-semibold text-slate-800">
+                              {formatReportDuration(row.total_duration_seconds)}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs text-slate-600">
+                              {formatReportDuration(row.average_duration_seconds)}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold text-slate-800">{row.outcomes_recorded}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="font-semibold text-amber-700">{row.follow_ups_assigned}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
+
+                {/* 6. Audit Logs Table */}
+                {activeTab === 'audit-logs' && (
+                  <>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>Audit ID</TableHeaderCell>
+                        <TableHeaderCell>User</TableHeaderCell>
+                        <TableHeaderCell>Action</TableHeaderCell>
+                        <TableHeaderCell>Entity</TableHeaderCell>
+                        <TableHeaderCell>Description</TableHeaderCell>
+                        <TableHeaderCell className="text-right">Timestamp</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayedData.map((row, idx) => (
+                        <TableRow
+                          key={row.audit_id || idx}
+                          className={`transition-colors hover:bg-indigo-50/20 ${idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}
+                        >
+                          <TableCell>
+                            <span className="font-mono text-xs font-bold text-slate-500">#{row.audit_id}</span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold text-slate-900">{row.user_name || `User #${row.user_id}`}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="purple" size="sm">{row.action}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-xs text-slate-700 uppercase">
+                              {row.entity_type} {row.entity_id ? `#${row.entity_id}` : ''}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-slate-600 line-clamp-1">{row.description}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs text-slate-500">{formatReportDate(row.created_at)}</span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </>
+                )}
               </Table>
-            )}
-          </div>
+            </div>
+
+            {/* Pagination Footer */}
+            <div className="px-4 sm:px-6 py-3.5 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+              <span>
+                Page <strong className="text-slate-800 font-semibold">{currentPage + 1}</strong>
+                {displayedData.length > 0 && ` (${displayedData.length} records shown)`}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+                  disabled={currentPage === 0}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((p) => p + 1)}
+                  disabled={!hasNextPage}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </PageContainer>

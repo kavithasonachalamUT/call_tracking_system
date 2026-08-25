@@ -13,6 +13,7 @@ class UserRoleEnum(str, Enum):
 class UserBase(BaseModel):
     name: str = Field(..., max_length=255)
     email: str = Field(..., max_length=255)
+    phone: Optional[str] = Field(None, max_length=30)
     role: UserRoleEnum = UserRoleEnum.AGENT
     manager_id: Optional[int] = None
     is_active: bool = True
@@ -25,6 +26,7 @@ class UserCreate(UserBase):
 class UserUpdateAdmin(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=30)
     password: Optional[str] = Field(None, min_length=6)
     role: Optional[UserRoleEnum] = None
     manager_id: Optional[int] = None
@@ -34,6 +36,7 @@ class UserUpdateAdmin(BaseModel):
 class UserProfileUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=30)
     password: Optional[str] = Field(None, min_length=6)
 
 

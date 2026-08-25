@@ -107,6 +107,7 @@ def create_user(db: Session, user_in: UserCreate, current_user: Optional[User] =
     db_user = User(
         name=user_in.name,
         email=user_in.email,
+        phone=user_in.phone,
         password_hash=get_password_hash(user_in.password),
         role=role_str,
         manager_id=user_in.manager_id,

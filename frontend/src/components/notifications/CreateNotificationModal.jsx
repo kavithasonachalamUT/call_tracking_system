@@ -59,20 +59,17 @@ export const CreateNotificationModal = ({
       } finally {
         if (isMounted) {
           setIsLoadingUsers(false);
+          setTitle('');
+          setMessage('');
+          setNotificationType('system_alert');
+          setReferenceType('');
+          setReferenceId('');
+          setFieldErrors({});
         }
       }
     };
 
     fetchUsers();
-
-    // Reset Form
-    setTitle('');
-    setMessage('');
-    setNotificationType('system_alert');
-    setReferenceType('');
-    setReferenceId('');
-    setFieldErrors({});
-    setServerError('');
 
     return () => {
       isMounted = false;

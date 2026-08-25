@@ -1,16 +1,15 @@
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
-import { formatDateTime, formatPhoneNumber, getStatusVariant } from '../../utils/formatters';
-
-const TYPE_LABELS = {
-  callback: '☎ Phone Callback',
-  email: '✉ Email Follow-up',
-  demo: '💻 Product Demo',
-  meeting: '📅 Scheduled Meeting',
-  whatsapp: '💬 WhatsApp Message',
-  other: '📝 Other Task',
-};
+import {
+  formatFollowUpType,
+  formatFollowUpStatus,
+  getFollowUpStatusVariant,
+  formatRelativeDueTime,
+  formatDateTime,
+  isFollowUpOverdue,
+} from '../../utils/followUpUtils';
+import { formatPhoneNumber } from '../../utils/formatters';
 
 export const FollowUpDetailsModal = ({
   isOpen,
@@ -19,14 +18,17 @@ export const FollowUpDetailsModal = ({
   customer,
   agent,
   onComplete,
+  onCancel,
   onEdit,
   isCompleting = false,
+  isCancelling = false,
 }) => {
   if (!followUp || !isOpen) return null;
 
   const isCompleted = followUp.status === 'completed';
   const isCancelled = followUp.status === 'cancelled';
-  const canComplete = !isCompleted && !isCancelled;
+  const isPending = !isCompleted && !isCancelled;
+  const isOverdue = isFollowUpOverdue(followUp.scheduled_at, followUp.status);
 
   return (
     <Modal
@@ -44,13 +46,26 @@ export const FollowUpDetailsModal = ({
             Close
           </Button>
 
-          {canComplete && (
+          {isPending && onCancel && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCancel(followUp.id)}
+              isLoading={isCancelling}
+              disabled={isCancelling || isCompleting}
+              className="text-rose-600 hover:bg-rose-50 hover:border-rose-300"
+            >
+              <span>Cancel Task</span>
+            </Button>
+          )}
+
+          {isPending && onComplete && (
             <Button
               variant="primary"
               size="sm"
               onClick={() => onComplete(followUp.id)}
               isLoading={isCompleting}
-              disabled={isCompleting}
+              disabled={isCompleting || isCancelling}
             >
               <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -59,16 +74,18 @@ export const FollowUpDetailsModal = ({
             </Button>
           )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              onClose();
-              onEdit(followUp);
-            }}
-          >
-            Edit Task
-          </Button>
+          {isPending && onEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                onClose();
+                onEdit(followUp);
+              }}
+            >
+              Edit Task
+            </Button>
+          )}
         </>
       }
     >
@@ -77,14 +94,30 @@ export const FollowUpDetailsModal = ({
         <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-800 text-xs">
-              {TYPE_LABELS[followUp.follow_up_type] || followUp.follow_up_type}
+              {formatFollowUpType(followUp.follow_up_type)}
             </span>
-            <Badge variant={getStatusVariant(followUp.status)} size="md">
-              {followUp.status?.toUpperCase()}
+            <Badge variant={getFollowUpStatusVariant(followUp.status, followUp.scheduled_at)} size="md">
+              {formatFollowUpStatus(followUp.status, followUp.scheduled_at)?.toUpperCase()}
             </Badge>
           </div>
           <span className="text-slate-400 font-mono text-[11px]">ID: #{followUp.id}</span>
         </div>
+
+        {/* Due Date Relative Pill */}
+        {isPending && (
+          <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+            isOverdue
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : 'bg-indigo-50/60 border-indigo-100 text-indigo-900'
+          }`}>
+            <span className="font-semibold">
+              {isOverdue ? '⚠️ Overdue Notice' : '⏰ Scheduled Timing'}
+            </span>
+            <span className="font-medium">
+              {formatRelativeDueTime(followUp.scheduled_at, followUp.status)}
+            </span>
+          </div>
+        )}
 
         {/* Details Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

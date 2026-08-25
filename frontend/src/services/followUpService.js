@@ -83,7 +83,19 @@ export const followUpService = {
   },
 
   /**
-   * Soft delete / cancel a follow-up
+   * Cancel a follow-up
+   * @param {number} followUpId
+   * @returns {Promise<any>}
+   */
+  cancelFollowUp: async (followUpId) => {
+    const response = await apiClient.put(`/follow-ups/${followUpId}`, {
+      status: 'cancelled',
+    });
+    return response.data;
+  },
+
+  /**
+   * Soft delete a follow-up
    * @param {number} followUpId
    * @returns {Promise<any>}
    */

@@ -10,6 +10,7 @@ import {
   formatPhoneNumber,
   getStatusVariant,
 } from '../utils/formatters';
+import { getDashboardTitle, isAdmin, isManager } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -25,7 +26,6 @@ import ErrorMessage from '../components/common/ErrorMessage';
 
 export const DashboardPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -343,7 +343,7 @@ export const DashboardPage = () => {
 
   return (
     <PageContainer
-      title="Dashboard Overview"
+      title={getDashboardTitle(user)}
       subtitle={
         <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-slate-500">
           <span>
@@ -351,11 +351,13 @@ export const DashboardPage = () => {
           </span>
           <span className="hidden sm:inline text-slate-300">•</span>
           <span className={`px-2 py-0.5 rounded-md font-semibold uppercase tracking-wider text-[10px] ${
-            isAdmin
+            isAdmin(user)
               ? 'bg-purple-50 text-purple-700 border border-purple-200'
+              : isManager(user)
+              ? 'bg-blue-50 text-blue-700 border border-blue-200'
               : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
           }`}>
-            {isAdmin ? 'Admin Access' : 'Agent Access'}
+            {isAdmin(user) ? 'Admin Access' : isManager(user) ? 'Manager Access' : 'Agent Access'}
           </span>
           {lastRefreshed && (
             <>
@@ -507,7 +509,9 @@ export const DashboardPage = () => {
         {/* Table Card Title Header */}
         <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-bold text-slate-900 tracking-tight">Recent Calls</h2>
+            <h2 className="text-base font-bold text-slate-900 tracking-tight">
+              {isAdmin(user) ? 'Organization Recent Calls' : isManager(user) ? 'Team Recent Calls' : 'My Recent Calls'}
+            </h2>
             <p className="text-xs text-slate-500 mt-0.5">Click Outcome to update call details</p>
           </div>
           <div className="flex items-center gap-3">
@@ -597,7 +601,7 @@ export const DashboardPage = () => {
                       <CallStatusBadge
                         status={call.status}
                         call={call}
-                        isAdmin={isAdmin}
+                        isAdmin={isAdmin(user)}
                         onOpenOverride={handleOpenOverrideModal}
                       />
                     </TableCell>
@@ -628,7 +632,9 @@ export const DashboardPage = () => {
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col">
           <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
             <div>
-              <h2 className="text-base font-bold text-slate-900 tracking-tight">Upcoming Follow-ups</h2>
+              <h2 className="text-base font-bold text-slate-900 tracking-tight">
+                {isAdmin(user) ? 'Upcoming Follow-ups (Organization)' : isManager(user) ? 'Upcoming Follow-ups (Team)' : 'My Upcoming Follow-ups'}
+              </h2>
               <p className="text-xs text-slate-500 mt-0.5">Scheduled customer tasks and reminders</p>
             </div>
             <div className="flex items-center gap-2">
@@ -734,7 +740,9 @@ export const DashboardPage = () => {
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-bold text-slate-900 tracking-tight">Live Call Activity Feed</h2>
+            <h2 className="text-base font-bold text-slate-900 tracking-tight">
+              {isAdmin(user) ? 'Live Organization Call Activity' : isManager(user) ? 'Live Team Call Activity' : 'My Live Call Activity'}
+            </h2>
             <p className="text-xs text-slate-500 mt-0.5">Real-time timeline of telecommunications and engagements</p>
           </div>
           <Badge variant="blue" size="sm">

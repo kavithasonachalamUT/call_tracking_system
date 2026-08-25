@@ -4,6 +4,7 @@ import { customerService } from '../../services/customerService';
 import { userService } from '../../services/userService';
 import { useAuth } from '../../hooks/useAuth';
 import { formatPhoneNumber, formatDateTime } from '../../utils/formatters';
+import { isAdmin, isManager } from '../../utils/permissions';
 
 const FOLLOW_UP_TYPES = [
   { value: 'callback', label: '☎ Phone Callback' },
@@ -36,43 +37,45 @@ const toDateTimeLocalString = (dateObj) => {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
-export const FollowUpFormModal = ({
-  isOpen,
+const getDefaultScheduledTime = () => {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(10, 0, 0, 0);
+  return toDateTimeLocalString(tomorrow);
+};
+
+const FollowUpFormModalInner = ({
   onClose,
   onSubmit,
   isEditing = false,
   initialData = null,
 }) => {
   const { user } = useAuth();
+  const canAssignAny = isAdmin(user) || isManager(user);
 
   const [calls, setCalls] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [agents, setAgents] = useState([]);
-  const [isLoadingDependencies, setIsLoadingDependencies] = useState(false);
+  const [isLoadingDependencies, setIsLoadingDependencies] = useState(true);
 
   // Form Fields
-  const [callId, setCallId] = useState('');
-  const [customerId, setCustomerId] = useState('');
-  const [assignedTo, setAssignedTo] = useState('');
-  const [followUpType, setFollowUpType] = useState('callback');
-  const [status, setStatus] = useState('pending');
-  const [scheduledAt, setScheduledAt] = useState('');
-  const [notes, setNotes] = useState('');
+  const [callId, setCallId] = useState(initialData ? String(initialData.call_id) : '');
+  const [customerId, setCustomerId] = useState(initialData ? String(initialData.customer_id) : '');
+  const [assignedTo, setAssignedTo] = useState(
+    initialData ? String(initialData.assigned_to) : String(user?.id || '1')
+  );
+  const [followUpType, setFollowUpType] = useState(initialData?.follow_up_type || 'callback');
+  const [status, setStatus] = useState(initialData?.status || 'pending');
+  const [scheduledAt, setScheduledAt] = useState(
+    initialData ? toDateTimeLocalString(initialData.scheduled_at) : getDefaultScheduledTime()
+  );
+  const [notes, setNotes] = useState(initialData?.notes || '');
 
   const [fieldErrors, setFieldErrors] = useState({});
   const [serverError, setServerError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Default scheduled_at to tomorrow at 10:00 AM
-  const getDefaultScheduledTime = () => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(10, 0, 0, 0);
-    return toDateTimeLocalString(tomorrow);
-  };
-
   useEffect(() => {
-    if (!isOpen) return;
     let isMounted = true;
 
     const fetchDependencies = async () => {
@@ -89,30 +92,10 @@ export const FollowUpFormModal = ({
           setCustomers(customersData);
           setAgents(agentsData);
 
-          if (!isEditing) {
-            // Default setup for New Follow-up
-            const defaultCall = callsData.length > 0 ? callsData[0] : null;
-            if (defaultCall) {
-              setCallId(String(defaultCall.id));
-              setCustomerId(String(defaultCall.customer_id));
-            } else if (customersData.length > 0) {
-              setCustomerId(String(customersData[0].id));
-            }
-
-            setAssignedTo(String(user?.id || (agentsData[0]?.id || '1')));
-            setFollowUpType('callback');
-            setStatus('pending');
-            setScheduledAt(getDefaultScheduledTime());
-            setNotes('');
-          } else if (initialData) {
-            // Setup for Edit Follow-up
-            setCallId(String(initialData.call_id));
-            setCustomerId(String(initialData.customer_id));
-            setAssignedTo(String(initialData.assigned_to));
-            setFollowUpType(initialData.follow_up_type || 'callback');
-            setStatus(initialData.status || 'pending');
-            setScheduledAt(toDateTimeLocalString(initialData.scheduled_at));
-            setNotes(initialData.notes || '');
+          if (!initialData && callsData.length > 0) {
+            const defaultCall = callsData[0];
+            setCallId(String(defaultCall.id));
+            setCustomerId(String(defaultCall.customer_id));
           }
         }
       } catch (err) {
@@ -127,29 +110,11 @@ export const FollowUpFormModal = ({
     };
 
     fetchDependencies();
-    setFieldErrors({});
-    setServerError('');
 
     return () => {
       isMounted = false;
     };
-  }, [isOpen, isEditing, initialData, user]);
-
-  // Escape key handler
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && !isSubmitting) {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
-
-  if (!isOpen) return null;
+  }, [initialData]);
 
   // When call selection changes, synchronize customerId
   const handleCallChange = (newCallId) => {
@@ -297,7 +262,7 @@ export const FollowUpFormModal = ({
                   value={callId}
                   onChange={(e) => handleCallChange(e.target.value)}
                   disabled={isSubmitting || isEditing}
-                  className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none disabled:bg-slate-50 disabled:text-slate-500"
+                  className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none disabled:bg-slate-50 disabled:text-slate-500 cursor-pointer"
                 >
                   {calls.map((c) => {
                     const cust = customers.find((cu) => cu.id === c.customer_id);
@@ -344,7 +309,7 @@ export const FollowUpFormModal = ({
                 value={followUpType}
                 onChange={(e) => setFollowUpType(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none"
+                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
               >
                 {FOLLOW_UP_TYPES.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -361,7 +326,7 @@ export const FollowUpFormModal = ({
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none"
+                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
               >
                 {FOLLOW_UP_STATUSES.map((s) => (
                   <option key={s.value} value={s.value}>{s.label}</option>
@@ -376,19 +341,25 @@ export const FollowUpFormModal = ({
               <label htmlFor="assigned-agent" className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Assigned Agent <span className="text-rose-500">*</span>
               </label>
-              <select
-                id="assigned-agent"
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-                disabled={isSubmitting}
-                className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none"
-              >
-                {agents.map((ag) => (
-                  <option key={ag.id} value={ag.id}>
-                    {ag.name} ({ag.role?.toUpperCase()})
-                  </option>
-                ))}
-              </select>
+              {canAssignAny ? (
+                <select
+                  id="assigned-agent"
+                  value={assignedTo}
+                  onChange={(e) => setAssignedTo(e.target.value)}
+                  disabled={isSubmitting}
+                  className="w-full h-[50px] px-3.5 bg-white rounded-xl text-sm text-slate-900 border border-slate-200 hover:border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 transition-all focus:outline-none cursor-pointer"
+                >
+                  {agents.map((ag) => (
+                    <option key={ag.id} value={ag.id}>
+                      {ag.name} ({ag.role?.toUpperCase()})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="h-[50px] flex items-center px-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 font-medium">
+                  {user?.name || `Agent #${user?.id}`} (Assigned to You)
+                </div>
+              )}
               {fieldErrors.assignedTo && (
                 <p className="text-xs text-rose-600 font-medium mt-1">{fieldErrors.assignedTo}</p>
               )}
@@ -460,6 +431,20 @@ export const FollowUpFormModal = ({
         </div>
       </div>
     </div>
+  );
+};
+
+export const FollowUpFormModal = ({ isOpen, onClose, onSubmit, isEditing = false, initialData = null }) => {
+  if (!isOpen) return null;
+
+  return (
+    <FollowUpFormModalInner
+      key={initialData ? `edit-${initialData.id}` : 'create-new'}
+      onClose={onClose}
+      onSubmit={onSubmit}
+      isEditing={isEditing}
+      initialData={initialData}
+    />
   );
 };
 

@@ -4,11 +4,18 @@ import { useAuth } from '../hooks/useAuth';
 import { callService } from '../services/callService';
 import { customerService } from '../services/customerService';
 import {
+  formatCallDirection,
+  getDirectionVariant,
+  formatPlatformName,
+  getPlatformVariant,
+  formatCallStatus,
+  getCallStatusVariant,
+  isCallActive,
   formatDuration,
   formatDateTime,
-  formatPhoneNumber,
-  getStatusVariant,
-} from '../utils/formatters';
+} from '../utils/callUtils';
+import { formatPhoneNumber, formatCustomerName } from '../utils/formatters';
+import { canReassignCalls, isAdmin, isManager } from '../utils/permissions';
 
 import PageContainer from '../components/layout/PageContainer';
 import Button from '../components/ui/Button';
@@ -55,13 +62,14 @@ const STATUS_OPTIONS = [
 
 export const CallsPage = () => {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const canReassign = canReassignCalls(user);
 
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [calls, setCalls] = useState([]);
   const [customersMap, setCustomersMap] = useState({});
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState(null);
@@ -119,7 +127,8 @@ export const CallsPage = () => {
 
     const fetchCalls = async () => {
       try {
-        setIsLoading(true);
+        if (refreshTrigger === 0) setIsLoading(true);
+        else setIsRefreshing(true);
         setError('');
 
         const params = {
@@ -146,6 +155,7 @@ export const CallsPage = () => {
       } finally {
         if (isMounted && requestId === latestRequestIdRef.current) {
           setIsLoading(false);
+          setIsRefreshing(false);
         }
       }
     };
@@ -229,7 +239,7 @@ export const CallsPage = () => {
         console.warn('Outcome recording error:', outcomeErr);
       }
     }
-    setToast({ message: '✓ Call created successfully', type: 'success' });
+    setToast({ message: 'Call created successfully', type: 'success' });
     triggerRefresh();
   };
 
@@ -238,7 +248,7 @@ export const CallsPage = () => {
     try {
       const updated = await callService.initiateCall(callId);
       setToast({
-        message: `✓ Outgoing call initiated (External SID: ${updated.external_call_id || 'Triggered'})`,
+        message: `Outgoing call initiated (External SID: ${updated.external_call_id || 'Triggered'})`,
         type: 'success',
       });
       triggerRefresh();
@@ -257,14 +267,14 @@ export const CallsPage = () => {
 
   const handleReassignCall = async (callId, targetAgentId) => {
     await callService.assignCall(callId, targetAgentId);
-    setToast({ message: '✓ Call reassigned to agent successfully', type: 'success' });
+    setToast({ message: 'Call reassigned to agent successfully', type: 'success' });
     triggerRefresh();
   };
 
   const handleOutcomeChange = async (callId, outcome) => {
     try {
       await callService.recordCallOutcome(callId, outcome);
-      setToast({ message: '✓ Call outcome recorded successfully', type: 'success' });
+      setToast({ message: 'Call outcome recorded successfully', type: 'success' });
       triggerRefresh();
     } catch (err) {
       setToast({ message: err.message || 'Unable to update outcome.', type: 'error' });
@@ -281,22 +291,46 @@ export const CallsPage = () => {
   const displayedCalls = calls.slice(0, PAGE_SIZE);
   const hasNextPage = calls.length > PAGE_SIZE;
 
+  // Role-aware subtitle
+  const pageSubtitle = isAdmin(user)
+    ? 'Manage organization calls'
+    : isManager(user)
+    ? 'Manage team calls'
+    : 'View your assigned calls';
+
   return (
     <PageContainer
       title="Calls"
-      subtitle="Manage, track, and monitor call activity"
+      subtitle={pageSubtitle}
       actions={
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setIsCreateModalOpen(true)}
-          className="shadow-xs"
-        >
-          <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          <span>New Call</span>
-        </Button>
+        <div className="flex items-center gap-2.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={triggerRefresh}
+            isLoading={isRefreshing}
+            disabled={isRefreshing || isLoading}
+            title="Refresh calls list"
+            className="shadow-xs"
+          >
+            <svg className="w-4 h-4 mr-1 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+          </Button>
+
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setIsCreateModalOpen(true)}
+            className="shadow-xs"
+          >
+            <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            <span>New Call</span>
+          </Button>
+        </div>
       }
     >
       {/* Toast Notification */}
@@ -376,7 +410,7 @@ export const CallsPage = () => {
             <select
               value={directionFilter}
               onChange={(e) => handleFilterChange('direction', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {DIRECTION_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -390,7 +424,7 @@ export const CallsPage = () => {
             <select
               value={platformFilter}
               onChange={(e) => handleFilterChange('platform', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {PLATFORM_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -404,7 +438,7 @@ export const CallsPage = () => {
             <select
               value={statusFilter}
               onChange={(e) => handleFilterChange('status', e.target.value)}
-              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="h-8 px-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
             >
               {STATUS_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -475,6 +509,8 @@ export const CallsPage = () => {
                   <TableRow>
                     <TableHeaderCell>ID</TableHeaderCell>
                     <TableHeaderCell>Customer</TableHeaderCell>
+                    <TableHeaderCell>Customer Phone</TableHeaderCell>
+                    <TableHeaderCell>Agent</TableHeaderCell>
                     <TableHeaderCell>Direction</TableHeaderCell>
                     <TableHeaderCell>Platform</TableHeaderCell>
                     <TableHeaderCell>Status</TableHeaderCell>
@@ -487,12 +523,14 @@ export const CallsPage = () => {
                 <TableBody>
                   {displayedCalls.map((call, idx) => {
                     const customer = customersMap[call.customer_id];
-                    const isOngoingOrInitiated =
+                    const isEligibleToDial =
                       call.direction === 'outgoing' &&
                       call.status !== 'completed' &&
                       call.status !== 'failed' &&
                       call.status !== 'cancelled' &&
                       !call.external_call_id;
+
+                    const isLive = isCallActive(call.status);
 
                     return (
                       <TableRow
@@ -504,7 +542,7 @@ export const CallsPage = () => {
                           <span className="font-mono text-xs font-bold text-slate-500">#{call.id}</span>
                         </TableCell>
 
-                        {/* Customer */}
+                        {/* Customer Name */}
                         <TableCell>
                           <button
                             type="button"
@@ -514,32 +552,51 @@ export const CallsPage = () => {
                             }}
                             className="font-semibold text-slate-900 hover:text-indigo-600 text-left hover:underline cursor-pointer transition-colors"
                           >
-                            {customer?.name || call.customer_name || `Customer #${call.customer_id}`}
+                            {formatCustomerName(customer?.name || call.customer_name) || `Customer #${call.customer_id}`}
                           </button>
-                          <div className="text-xs text-slate-500 font-mono">
+                        </TableCell>
+
+                        {/* Customer Phone */}
+                        <TableCell>
+                          <span className="text-xs text-slate-600 font-mono">
                             {formatPhoneNumber(customer?.phone || call.customer_phone || '')}
+                          </span>
+                        </TableCell>
+
+                        {/* Assigned Agent */}
+                        <TableCell>
+                          <div className="text-xs font-medium text-slate-800">
+                            {call.agent_name || (call.agent_id ? `Agent #${call.agent_id}` : 'Unassigned')}
                           </div>
                         </TableCell>
 
                         {/* Direction */}
                         <TableCell>
-                          <Badge variant={call.direction === 'outgoing' ? 'blue' : 'indigo'} size="sm">
-                            {call.direction?.toUpperCase()}
+                          <Badge variant={getDirectionVariant(call.direction)} size="sm">
+                            {formatCallDirection(call.direction)}
                           </Badge>
                         </TableCell>
 
                         {/* Platform */}
                         <TableCell>
-                          <span className="text-xs capitalize font-medium text-slate-700">
-                            {call.call_type || 'Phone'}
-                          </span>
+                          <Badge variant={getPlatformVariant(call.call_type || 'phone')} size="sm">
+                            {formatPlatformName(call.call_type || 'phone')}
+                          </Badge>
                         </TableCell>
 
                         {/* Status */}
                         <TableCell>
-                          <Badge variant={getStatusVariant(call.status)} size="sm">
-                            {call.status}
-                          </Badge>
+                          <div className="flex items-center gap-1.5">
+                            {isLive && (
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                              </span>
+                            )}
+                            <Badge variant={getCallStatusVariant(call.status)} size="sm">
+                              {formatCallStatus(call.status)}
+                            </Badge>
+                          </div>
                         </TableCell>
 
                         {/* Duration */}
@@ -558,7 +615,7 @@ export const CallsPage = () => {
                           />
                         </TableCell>
 
-                        {/* Started At */}
+                        {/* Started At / Created At */}
                         <TableCell>
                           <span className="text-xs text-slate-500 whitespace-nowrap">
                             {formatDateTime(call.start_time || call.created_at)}
@@ -569,7 +626,7 @@ export const CallsPage = () => {
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             {/* Initiate Provider Call Button */}
-                            {isOngoingOrInitiated && (
+                            {isEligibleToDial && (
                               <Button
                                 variant="primary"
                                 size="sm"
@@ -602,15 +659,15 @@ export const CallsPage = () => {
                               </svg>
                             </button>
 
-                            {/* Admin Reassign Button */}
-                            {isAdmin && (
+                            {/* Reassign Call Button (Admin or Manager) */}
+                            {canReassign && (
                               <button
                                 onClick={() => {
                                   setReassignCall(call);
                                   setIsReassignModalOpen(true);
                                 }}
                                 className="p-1.5 rounded-lg text-slate-400 hover:text-purple-600 hover:bg-purple-50 transition-colors cursor-pointer"
-                                title="Admin: Reassign Call"
+                                title="Reassign Call"
                                 aria-label="Reassign Agent"
                               >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -673,13 +730,15 @@ export const CallsPage = () => {
         isInitiating={initiatingCallId === detailsCall?.id}
       />
 
-      {/* 3. Admin Reassign Call Modal */}
-      <ReassignCallModal
-        isOpen={isReassignModalOpen}
-        onClose={() => setIsReassignModalOpen(false)}
-        call={reassignCall}
-        onReassign={handleReassignCall}
-      />
+      {/* 3. Reassign Call Modal (Admin / Manager) */}
+      {canReassign && (
+        <ReassignCallModal
+          isOpen={isReassignModalOpen}
+          onClose={() => setIsReassignModalOpen(false)}
+          call={reassignCall}
+          onReassign={handleReassignCall}
+        />
+      )}
     </PageContainer>
   );
 };

@@ -21,6 +21,7 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: str
+    phone: Optional[str] = None
     role: str
     manager_id: Optional[int] = None
     is_active: bool

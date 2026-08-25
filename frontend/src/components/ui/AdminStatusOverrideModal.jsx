@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import Modal from './Modal';
 import Button from './Button';
 
@@ -10,35 +10,23 @@ const STATUS_OPTIONS = [
   { value: 'cancelled', label: '− Cancelled' },
 ];
 
-export const AdminStatusOverrideModal = ({
+const AdminStatusOverrideModalInner = ({
   isOpen,
   onClose,
   call,
   onSubmitOverride,
 }) => {
-  const [selectedStatus, setSelectedStatus] = useState('');
+  const normalizedInitialStatus =
+    call.status === 'ringing'
+      ? 'initiated'
+      : call.status === 'missed'
+      ? 'failed'
+      : call.status;
+
+  const [selectedStatus, setSelectedStatus] = useState(normalizedInitialStatus || 'completed');
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState('');
-
-  const prevCallIdRef = useRef(null);
-
-  if (isOpen && call && call.id !== prevCallIdRef.current) {
-    prevCallIdRef.current = call.id;
-    const normalized =
-      call.status === 'ringing'
-        ? 'initiated'
-        : call.status === 'missed'
-        ? 'failed'
-        : call.status;
-    setSelectedStatus(normalized || 'completed');
-    setReason('');
-    setValidationError('');
-  } else if (!isOpen && prevCallIdRef.current !== null) {
-    prevCallIdRef.current = null;
-  }
-
-  if (!call || !isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -58,10 +46,10 @@ export const AdminStatusOverrideModal = ({
     setIsSubmitting(true);
 
     try {
-      await onSubmitOverride(call, selectedStatus, trimmedReason);
+      await onSubmitOverride(call.call_id || call.id, selectedStatus, trimmedReason);
       onClose();
-    } catch {
-      setValidationError('Failed to override status. Please try again.');
+    } catch (err) {
+      setValidationError(err.message || 'Failed to update status. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -71,8 +59,7 @@ export const AdminStatusOverrideModal = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Override Call Status (Admin Exception)"
-      maxWidth="max-w-md"
+      title="Admin Status Override"
       footer={
         <>
           <Button
@@ -88,50 +75,53 @@ export const AdminStatusOverrideModal = ({
             size="sm"
             onClick={handleSubmit}
             isLoading={isSubmitting}
-            disabled={isSubmitting}
+            disabled={isSubmitting || selectedStatus === call.status}
           >
-            {isSubmitting ? 'Logging...' : 'Submit Override'}
+            Update Call Status
           </Button>
         </>
       }
     >
-      <form onSubmit={handleSubmit} className="space-y-4 text-left">
-        {/* Caution Notice */}
-        <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex items-start gap-2.5">
-          <svg className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Call Summary Banner */}
+        <div className="p-3 bg-purple-50/70 border border-purple-100 rounded-xl flex items-center justify-between text-xs">
           <div>
-            <strong>Audit Log Notice:</strong> This action overrides the telephony provider's automatic status. It will be recorded in <strong>Audit Logs</strong> with your user ID and timestamp.
+            <span className="font-semibold text-purple-900">
+              Call #{call.call_id || call.id}
+            </span>
+            <span className="text-purple-700 ml-2">
+              Customer: {call.customer_name || 'Direct / Unknown'}
+            </span>
           </div>
+          <span className="font-mono text-purple-800 uppercase px-2 py-0.5 bg-purple-100/80 rounded-md font-bold text-[10px]">
+            Current: {call.status}
+          </span>
         </div>
 
-        {/* Call Info Summary */}
-        <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
-          <div className="flex justify-between">
-            <span className="text-slate-500">Call ID:</span>
-            <span className="font-semibold text-slate-800">#{call.call_id || call.id}</span>
+        {/* Validation / Server Error Banner */}
+        {validationError && (
+          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+            <svg className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span>{validationError}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Customer:</span>
-            <span className="font-semibold text-slate-800">{call.customer_name}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Current Status:</span>
-            <span className="font-semibold uppercase text-indigo-700">{call.status}</span>
-          </div>
-        </div>
+        )}
 
-        {/* Corrected Status Select */}
+        {/* New Status Select */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-            Corrected Status <span className="text-rose-500">*</span>
+          <label htmlFor="admin-override-status" className="block text-xs font-semibold text-slate-700 mb-1.5">
+            New Call Status <span className="text-rose-500">*</span>
           </label>
           <select
+            id="admin-override-status"
             value={selectedStatus}
-            onChange={(e) => setSelectedStatus(e.target.value)}
+            onChange={(e) => {
+              setSelectedStatus(e.target.value);
+              setValidationError('');
+            }}
             disabled={isSubmitting}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="w-full h-10 px-3 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all cursor-pointer"
           >
             {STATUS_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -139,29 +129,53 @@ export const AdminStatusOverrideModal = ({
               </option>
             ))}
           </select>
+          <p className="mt-1 text-[11px] text-slate-400">
+            Select the desired status to manually set for this call record.
+          </p>
         </div>
 
-        {/* Mandatory Reason */}
+        {/* Justification / Reason Textarea */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-            Justification / Reason <span className="text-rose-500">*</span>
+          <label htmlFor="admin-override-reason" className="block text-xs font-semibold text-slate-700 mb-1.5">
+            Administrative Justification <span className="text-rose-500">*</span>
           </label>
           <textarea
+            id="admin-override-reason"
             rows={3}
             value={reason}
-            onChange={(e) => setReason(e.target.value)}
+            onChange={(e) => {
+              setReason(e.target.value);
+              if (validationError) setValidationError('');
+            }}
+            placeholder="Explain why this manual status override is necessary (e.g. Telephony webhook timeout / agent disconnection resolution)..."
             disabled={isSubmitting}
-            placeholder="e.g. Telephony webhook delay misreported ongoing call as failed"
-            className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all resize-none"
           />
+          <p className="mt-1 text-[11px] text-slate-400">
+            This justification will be recorded permanently in the system Audit Log.
+          </p>
         </div>
-
-        {/* Validation Error */}
-        {validationError && (
-          <p className="text-xs text-rose-600 font-medium">{validationError}</p>
-        )}
       </form>
     </Modal>
+  );
+};
+
+export const AdminStatusOverrideModal = ({
+  isOpen,
+  onClose,
+  call,
+  onSubmitOverride,
+}) => {
+  if (!call || !isOpen) return null;
+
+  return (
+    <AdminStatusOverrideModalInner
+      key={call.call_id || call.id}
+      isOpen={isOpen}
+      onClose={onClose}
+      call={call}
+      onSubmitOverride={onSubmitOverride}
+    />
   );
 };
 
